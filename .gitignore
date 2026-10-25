@@ -1,0 +1,23 @@
+# training output
+runs/
+logs/
+outputs/
+*.pt
+*.onnx
+events.out.tfevents*
+videos/
+
+# python / uv
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+
+# usd: ascii (.usda) is committable, binary is not
+*.usdc
+*.usdz
+
+# omniverse / kit caches
+.nvidia-omniverse/
+kit/
+*.log

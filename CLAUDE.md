@@ -6,11 +6,15 @@ Side project: teach a stick-figure agent to swing golf clubs and play a designed
 
 ## Environment
 
-- **Isaac Sim 6.0** installed at `C:\isaacsim` (workstation binary install). Isaac Lab NOT yet installed — Phase 0 task. Check Isaac Lab's compatibility matrix against Isaac Sim 6.0 and the installed driver before anything else; pin versions in `docs/versions.md` once working.
-- **Hardware:** RTX 5070 Ti 16 GB (Blackwell), Ryzen 5700X, 32 GB RAM. Training runs **headless** (`--headless`); GUI only for inspection/replays. 32 GB RAM is at Isaac's floor — avoid GUI + training simultaneously.
-- **Dedicated conda env** (`isaac-golf`, or whatever Isaac Lab's installer dictates — likely a pinned Python 3.11/3.12). Never share the `ml` env; Isaac pins its own torch.
-- RL stacks: use what Isaac Lab ships (**rsl_rl** or **skrl**, PPO). Do not hand-roll PPO.
-- Long runs in a detached terminal; checkpoints + TensorBoard logs to `runs/` (gitignored).
+- **Isaac Lab 3.0.0 + Isaac Sim 6.2** (pip wheels), **uv project, Python 3.12**. Full matrix and install gotchas in `docs/versions.md`; `uv.lock` is the pin.
+- **No conda.** Isaac Lab 3.0 ships a uv-based install; `uv.lock` does what a pinned conda env would. Never install into another env; Isaac pins its own torch (2.11.0+cu130).
+- The old binary install at `C:\isaacsim` (6.0.0-rc.59) is **unused and untouched** — it only pairs with Isaac Lab's `v3.0.0-beta2` tag. Don't wire anything to it.
+- Every command runs through `uv run --env-file omni.env ...`. `omni.env` carries the accepted Omniverse EULA (Kit won't boot without it) and the UTF-8 vars Windows needs.
+- **Hardware:** RTX 5070 Ti 16 GB (Blackwell), Ryzen 5700X, 32 GB RAM. 32 GB RAM is at Isaac's floor — never GUI + training simultaneously.
+- **Headless is the default in 3.0** — there is no `--headless` flag. GUI is opt-in via `--viz kit`.
+- RL stacks: use what Isaac Lab ships (**rsl_rl** PPO; skrl for AMP later). Do not hand-roll PPO.
+- Long runs in a detached terminal. Isaac Lab writes checkpoints + TensorBoard to `logs/` (gitignored; `runs/` is ignored too but unused).
+- **Physics backend** is per-run: `physics=NAME`. We train on **`isaacsim_physx`** — chosen for Phase 3's USD course and GUI replay, not speed. `newton_mjwarp` measured *faster* (234k vs 160k env-steps/s, 2.0 vs 4.9 GB VRAM) and is a live alternative, not a fallback; revisit at the Stage 2 gate when impact fidelity starts to matter. Keep env configs backend-agnostic (`PresetCfg`) so switching stays cheap. `physics=` defaults to `newton_mjwarp`, so **PhysX must be asked for explicitly every run**.
 
 ## Architecture (three phases — do not blend them)
 
@@ -71,11 +75,13 @@ Standard shaping terms kept throughout: action-rate penalty (smoothness), small 
 - **Don't end-to-end the whole golf round** — hierarchy per Phase 3.
 - **Don't trust raw contact impulses at impact** — small dt/substeps, or sample clubhead velocity at proximity.
 - **Don't start with a sparse ball-in-hole reward** — curriculum above.
+- **Don't fork blind:** the stock humanoid has **no hands** (arms end at `left_lower_arm`/`right_lower_arm`) — those are the club's weld targets. Env logic lives in `locomotion_direct_env.py`, not the humanoid files.
+- **Don't copy Isaac Lab 2.x tutorials verbatim** — 3.0 moved asset data behind `.torch` accessors, dropped `--headless`, and dropped the `-v0` task suffix.
 - **Version drift:** Isaac Lab ↔ Isaac Sim ↔ driver versions get pinned once working; upgrades are deliberate, between phases, never mid-training.
 
 ## Milestones
 
-- [ ] **Phase 0:** Isaac Lab installed against Isaac Sim 6.0; stock humanoid example trains headless on this machine (sanity: steps/sec logged)
+- [x] **Phase 0:** Isaac Lab 3.0 + Isaac Sim 6.2 installed; stock humanoid trains headless at 4096 envs, ~160k env-steps/s on PhysX, 4.9 GB VRAM (`docs/experiments.md`)
 - [ ] Fork humanoid env → golf env skeleton: teed ball + welded club + reset/termination
 - [ ] Stage 0–1 training: agent reliably contacts the ball
 - [ ] Stage 2–3: fast, directed ball at impact

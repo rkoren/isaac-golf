@@ -1,0 +1,28 @@
+[project]
+name = "isaac-golf"
+version = "0.1.0"
+description = "RL golf agents in Isaac Lab"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "isaaclab[isaacsim,rsl-rl]==3.0.0",
+    "torch==2.11.0",
+    "torchvision==0.26.0",
+]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu130" }
+torchvision = { index = "pytorch-cu130" }
+isaaclab = { index = "nvidia" }
+
+[[tool.uv.index]]
+name = "nvidia"
+url = "https://pypi.nvidia.com/"
+
+[tool.uv]
+# isaacsim-kernel 6.2 pins urllib3==2.7.0, isaaclab 3.0.0 wants >=2.8.0. unresolvable upstream.
+# 2.8.0 satisfies isaaclab's floor; kernel's exact pin is a build-env artifact, 2.7->2.8 is minor.
+override-dependencies = ["urllib3==2.8.0"]
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
