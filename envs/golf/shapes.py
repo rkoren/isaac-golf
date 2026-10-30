@@ -1,17 +1,10 @@
-"""Collision shapes of the golfer, read from its USD. Shared by the swing recorder and the checks.
-
-Only needs pxr, so it imports without Isaac running.
-"""
+"""Golfer collision shapes from its USD (pxr only)"""
 
 from __future__ import annotations
 
 
 def body_shapes(usd_path: str) -> dict[str, list[tuple]]:
-    """Collision shapes per body, as points in that body's frame. Read from the asset, so a
-    resized club or swapped humanoid shows up without touching any caller.
-
-    ("cap", a, b, r) | ("sph", c, r) | ("box", c, c+half_x, c+half_y, c+half_z)
-    """
+    """Shapes per body in body frame: ("cap", a, b, r) | ("sph", c, r) | ("box", c, c+hx, c+hy, c+hz)."""
     from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
     stage = Usd.Stage.Open(usd_path)
@@ -52,9 +45,7 @@ def body_shapes(usd_path: str) -> dict[str, list[tuple]]:
 
 
 def capsule_table(usd_path: str, body_names: list[str]):
-    """Every shape as a capsule, for overlap tests: a sphere is a zero-length capsule, the
-    clubhead box a capsule along its longest half-axis. Returns body-local points, the body
-    index owning each point, and capsules as (point_a, point_b, radius, body_name)."""
+    """Every shape as a capsule (box ~ capsule on its long axis): local points, owners, (a, b, r, body)."""
     import numpy as np
 
     shapes = body_shapes(usd_path)
@@ -91,8 +82,7 @@ def collision_pairs(usd_path: str, caps: list[tuple]) -> list[tuple[int, int]]:
 
 
 def seg_dist(p1, q1, p2, q2):
-    """Closest distance between segments p1q1 and p2q2, batched over leading dims (torch).
-    Ericson, Real-Time Collision Detection 5.1.9; degenerate (zero-length) segments allowed."""
+    """Batched closest distance between segments p1q1 and p2q2 (Ericson 5.1.9)"""
     import torch
 
     eps = 1e-9
@@ -113,7 +103,7 @@ def seg_dist(p1, q1, p2, q2):
 
 
 def penetrations(world, caps, pairs):
-    """Penetration depth [m] per pair, (..., P); positive = overlapping. world: (..., K, 3)."""
+    """Penetration depth [m] per pair, (..., P); positive = overlapping. world: (..., K, 3)"""
     import torch
 
     i = torch.tensor([caps[p][0] for p, _ in pairs], device=world.device)

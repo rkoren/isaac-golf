@@ -67,7 +67,7 @@ args.device = env_cfg.sim.device
 
 
 def part(body: str) -> str:
-    # lead/trail for a right-hander: left arm leads. colours in the viewer key off this
+    # left arm leads for a right-hander
     return "club" if body == CLUB_BODY else "lead" if body.startswith("left_") else (
         "trail" if body.startswith("right_") else "core"
     )
@@ -106,8 +106,7 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
     runner = create_rsl_rl_runner(env, agent_cfg)
 
-    # flatten every shape into one point list: (body index, local point). the viewer only ever
-    # sees world points, so it never has to know this sim's quaternion order (xyzw in 3.0)
+    # every shape as body-local points; the viewer only gets world points
     shapes = body_shapes(GOLFER_USD)
     names = u.robot.body_names
     local, owner, prims = [], [], []
@@ -150,16 +149,15 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
         sc = torch.zeros(N, T, 7, device=u.device)
         length = torch.zeros(N, dtype=torch.long, device=u.device)
         alive = torch.ones(N, dtype=torch.bool, device=u.device)
-        smash = torch.zeros(N, device=u.device)  # the env's smash factor at the strike, 0 if none
+        smash = torch.zeros(N, device=u.device)  # 0 if no strike
+        backwards = torch.zeros(N, dtype=torch.bool, device=u.device)
 
-        # reset inside inference mode too: stepping in it turns env buffers into inference
-        # tensors, and the next checkpoint's reset would then fail writing to them
+        # reset inside inference mode too, or the next checkpoint's reset fails
         with torch.inference_mode():
             obs, _ = env.reset()
             org = u.scene.env_origins
             for t in range(T):
-                # read the sim, not the env's cached values: those are computed before the
-                # post-reset kinematics refresh, so frame 0 would be stale
+                # read the sim directly: env caches are stale at frame 0
                 d = u.robot.data
                 world = d.body_link_pos_w.torch[:, owner_t] + quat_apply(
                     d.body_link_quat_w.torch[:, owner_t], local_t.expand(N, K, 3)
@@ -181,6 +179,8 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
                 pts[alive, t] = frame[alive]
                 if hasattr(u, "smash"):
                     smash = torch.where(alive, torch.maximum(smash, u.smash), smash)
+                if hasattr(u, "backwards"):
+                    backwards |= alive & u.backwards
                 sc[alive, t, :6] = row[alive]
                 length += alive.long()
                 if t == T - 1:
@@ -203,14 +203,12 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
         hit_frame = torch.where(hit, (sc[..., 5] > 0.5).float().argmax(1), -1)
         ret = sc[..., 6].sum(1)
         fell = min_torso < 0.6
-        # what the ball-speed reward actually pays: gain over the running max, once armed.
-        # raw max ball speed also counts a ball knocked off the tee at reset, which pays nothing
+        # what the reward pays: armed gain over the running max
         ball_v = sc[..., 1] * valid
         prev_max = torch.cat([torch.zeros_like(ball_v[:, :1]), ball_v.cummax(1).values[:, :-1]], 1)
         paid = (torch.relu(ball_v - prev_max) * (sc[..., 4] > 0.5) * valid).sum(1)
 
-        # who touched the ball first: nearest shape to where the ball sat, over the frames
-        # either side of the step it started moving
+        # first toucher: nearest shape when the ball started moving
         moved = (sc[..., 1] > MOVED) & valid
         first = moved.float().argmax(1)
         pts_np, sc_np = pts.cpu().numpy(), sc.cpu().numpy()
@@ -223,7 +221,7 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
             ball = pts_np[i, t0, K]
             near = min(prims, key=lambda pr: min(surface_dist(ball, pts_np[i, f], pr) for f in (t0, t1)))
             struck.append({"by": striker(near), "frame": t1, "armed": bool(sc_np[i, t1, 4] > 0.5)})
-        # the env holds the ball on the tee until armed, so this is the club touching it early
+        # touched before arming
         early = [s is not None and not s["armed"] for s in struck]
         swung = [s["by"] for s in struck if s is not None and s["armed"]]
 
@@ -241,6 +239,7 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
             "struck_by": {b: swung.count(b) for b in sorted(set(swung), key=swung.count, reverse=True)},
             "mean_paid_ball_speed": paid.mean().item(),
             "mean_smash": smash[smash > 0].mean().item() if (smash > 0).any() else 0.0,
+            "backwards_rate": backwards.float().mean().item(),
             "fell_rate": fell.float().mean().item(),
             "mean_max_ball_speed": max_ball.mean().item(),
             "best_ball_speed": max_ball.max().item(),
@@ -271,7 +270,7 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
                     "hitFrame": hit_frame[i].item(), "maxBall": max_ball[i].item(),
                     "maxClub": max_club[i].item(), "minDist": min_dist[i].item(),
                     "fell": bool(fell[i]), "ret": ret[i].item(), "paid": paid[i].item(), "struck": struck[i],
-                    "smash": smash[i].item(),
+                    "smash": smash[i].item(), "backwards": bool(backwards[i]),
                     "pts": pack(mm), "sc": pack(sc[i, :L].float()),
                 }
             )

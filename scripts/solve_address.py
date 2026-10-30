@@ -24,13 +24,15 @@ from isaaclab.app import add_launcher_args, launch_simulation
 ap = argparse.ArgumentParser(description=__doc__)
 ap.add_argument("--task", default="Isaac-Golf-Swing-Direct")
 ap.add_argument("--num_envs", type=int, default=4096)
-ap.add_argument("--iters", type=int, default=25)
+ap.add_argument("--iters", type=int, default=40)
 ap.add_argument("--elite", type=float, default=0.03)
 ap.add_argument("--ball_z", type=float, default=0.05, help="teed ball centre height")
 ap.add_argument("--hand_x", type=float, default=0.25, help="lead hand in front of the feet")
 ap.add_argument("--hand_z", type=float, default=0.72, help="lead hand height at address")
 ap.add_argument("--shaft_deg", type=float, default=42.0, help="shaft angle from vertical")
 ap.add_argument("--ball_gap", type=float, default=0.02, help="air between clubface and ball at address [m]")
+ap.add_argument("--stance", type=float, default=0.40, help="ankle to ankle along the target line [m]")
+ap.add_argument("--knee_deg", type=float, default=25.0, help="knee flex at address")
 add_launcher_args(ap)
 args, extra = ap.parse_known_args()
 sys.argv = [sys.argv[0]] + [a for a in extra if "=" in a and not a.startswith("-")]
@@ -52,8 +54,14 @@ SEARCH = [
     ("lower_waist:0", -0.5, 0.5),
     ("lower_waist:1", -1.309, 0.524),
     ("pelvis", -0.6, 0.6),
+    ("right_thigh:0", -0.785, 0.262),
+    ("left_thigh:0", -0.785, 0.262),
     ("right_thigh:1", -1.0, 0.3),
     ("left_thigh:1", -1.0, 0.3),
+    ("right_foot:0", -0.873, 0.873),
+    ("right_foot:1", -0.873, 0.873),
+    ("left_foot:0", -0.873, 0.873),
+    ("left_foot:1", -0.873, 0.873),
     ("right_shin", -0.9, 0.0),
     ("left_shin", -0.9, 0.0),
     ("left_upper_arm:0", -1.571, 1.222),
@@ -65,7 +73,6 @@ SEARCH = [
 ]
  
 EVAL_Z = 5.0
-FOOT_Z = 0.045
 HEAD_DEPTH = 0.04
 
 env_cfg, _ = resolve_task_config(args.task, "")
@@ -88,10 +95,10 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
     names = [s[0] for s in SEARCH[ROT_DIMS:]]
     jidx, _ = u.robot.find_joints(names, preserve_order=True)
     jidx = torch.tensor(jidx, dtype=torch.long, device=dev)
-    club_i, lf_i, rf_i, head_i, torso_i, pelvis_i, lsh_i, rsh_i, lhip_i, rhip_i = [
+    club_i, lf_i, rf_i, head_i, torso_i, pelvis_i, lsh_i, rsh_i, lhip_i, rhip_i, lkn_i, rkn_i = [
         u.robot.find_bodies([b])[0][0]
         for b in ("club", "left_foot", "right_foot", "head", "torso", "pelvis",
-                  "left_upper_arm", "right_upper_arm", "left_thigh", "right_thigh")
+                  "left_upper_arm", "right_upper_arm", "left_thigh", "right_thigh", "left_shin", "right_shin")
     ]
 
     # limbs must not start inside each other
@@ -99,6 +106,11 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
     cap_pairs = collision_pairs(GOLFER_USD, caps)
     cap_local = torch.tensor(cap_local, dtype=torch.float32, device=dev)
     cap_owner = torch.tensor(cap_owner, dtype=torch.long, device=dev)
+    # foot capsule endpoints, for flat feet on the ground
+    foot_pts = {f: [i for c in caps if c[3] == f for i in c[:2]] for f in ("left_foot", "right_foot")}
+    foot_r = next(c[2] for c in caps if c[3] == "left_foot")
+    mass = u.robot.data.body_mass.torch[0]
+    knee_target = math.radians(args.knee_deg)
 
     lo = torch.tensor([s[1] for s in SEARCH], device=dev)
     hi = torch.tensor([s[2] for s in SEARCH], device=dev)
@@ -124,32 +136,42 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
         jpos = u.robot.data.default_joint_pos.torch.clone()
         jpos[:, jidx] = cand[:, ROT_DIMS:]
         u.robot.write_joint_state_to_sim(position=jpos, velocity=torch.zeros_like(jpos))
-        # one step so physx recomputes link transforms. 1/120 s of gravity is ~0.3 mm.
+        # one step so physx recomputes link transforms
         u.sim.step(render=False)
         u.scene.update(u.physics_dt)
         pos = u.robot.data.body_link_pos_w.torch - origins.unsqueeze(1)
         return pos, u.robot.data.body_link_quat_w.torch.clone()
 
     def score(pose: tuple[torch.Tensor, torch.Tensor]):
-        """Drop onto the ground, recentre on the feet, then judge the POSE (not the club).
-
-        The club direction is not searched here: it is set by the weld rotation, which we
-        solve in closed form afterwards. All this has to do is produce a natural address
-        whose lead hand sits exactly one club length from the ball.
-        """
+        """Stand the pose on its feet, centred on the ankles, and judge it (the club comes later)."""
         pos, quat = pose
+        world = pos[:, cap_owner] + quat_apply(quat[:, cap_owner], cap_local.expand(n, -1, -1))
+        fl, fr = world[:, foot_pts["left_foot"]], world[:, foot_pts["right_foot"]]
         shift = torch.zeros(n, 3, device=dev)
-        shift[:, 2] = FOOT_Z - pos[:, :, 2].min(dim=1).values
+        shift[:, 2] = foot_r - torch.cat([fl, fr], 1)[..., 2].min(dim=1).values
         shift[:, :2] = -(pos[:, lf_i, :2] + pos[:, rf_i, :2]) / 2
         p = pos + shift.unsqueeze(1)
+        fl, fr = fl + shift.unsqueeze(1), fr + shift.unsqueeze(1)
         lead, trail = p[:, u._lead_idx], p[:, u._trail_idx]
         lf, rf, torso, pelvis = p[:, lf_i], p[:, rf_i], p[:, torso_i], p[:, pelvis_i]
 
-        # put the hands where a golfer holds them. the ball is DERIVED from this afterwards
-        # (hand + one club length down the shaft), so nothing here fights the club geometry.
+        # hands where a golfer holds them; the ball is derived from this
         cost = 20.0 * torch.sum((lead - hand_target) ** 2, dim=-1)
-        # feet down, both of them
-        cost += 8.0 * ((lf[:, 2] - FOOT_Z) ** 2 + (rf[:, 2] - FOOT_Z) ** 2)
+        # both feet flat on the ground, toes forward
+        for f in (fl, fr):
+            cost += 8.0 * (f[..., 2].min(dim=1).values - foot_r) ** 2
+            cost += 50.0 * ((f[..., 2] - f[..., 2].mean(1, keepdim=True)) ** 2).sum(-1)
+            toe = f[:, 1::2, :2] - f[:, 0::2, :2]
+            cost += 2.0 * (1.0 - (toe[..., 0].abs() / torch.linalg.norm(toe, dim=-1).clamp_min(1e-6))).sum(-1)
+        # athletic: feet wide and square, knees soft, weight over the middle of the feet
+        cost += 20.0 * ((lf[:, 1] - rf[:, 1]) - args.stance) ** 2 + 10.0 * (lf[:, 0] - rf[:, 0]) ** 2
+        for hip, knee, foot in ((lhip_i, lkn_i, lf_i), (rhip_i, rkn_i, rf_i)):
+            flex = torch.arccos(torch.nn.functional.cosine_similarity(
+                p[:, knee] - p[:, hip], p[:, foot] - p[:, knee], dim=-1).clamp(-1.0, 1.0))
+            cost += 4.0 * (flex - knee_target) ** 2
+        com = (p * mass.view(1, -1, 1)).sum(1) / mass.sum()
+        support = torch.cat([fl, fr], 1)[..., :2].mean(1)
+        cost += 20.0 * torch.sum((com[:, :2] - support) ** 2, dim=-1)
         # stand up: do not fold in half. torso well above pelvis, pelvis well above feet.
         cost += 8.0 * torch.relu(0.35 - (torso[:, 2] - pelvis[:, 2])) ** 2
         cost += 8.0 * torch.relu(1.00 - torso[:, 2]) ** 2
@@ -161,8 +183,7 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
             lat = p[:, l_i] - p[:, r_i]
             lat = lat / torch.linalg.norm(lat, dim=-1, keepdim=True).clamp_min(1e-6)
             cost += w * (1.0 - lat @ TARGET_DIR)
-        # no limb inside another (arms through the belly, mostly). 1 cm costs 0.02, 5 cm 0.5
-        world = pos[:, cap_owner] + quat_apply(quat[:, cap_owner], cap_local.expand(n, -1, -1))
+        # no limb inside another
         cost += 200.0 * (torch.relu(penetrations(world, caps, cap_pairs)) ** 2).sum(-1)
         return cost, p, shift
 
@@ -193,9 +214,7 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
     f = R_hand.T @ TARGET_DIR                                  # wanted face normal
     f = f - (f @ a) * a
     f = f / torch.linalg.norm(f)                               # club +x, orthogonal to +z
-    # usd fixed joint: T_body0 * (p0,q0) == T_body1 * (p1,q1), so with q0 = identity
-    #   R_club = R_hand @ R_weld^T  and  club_pos = hand_pos - R_club @ (0,0,GRIP_Z).
-    # the weld must therefore map the shaft direction TO z, not from it -> rows, not columns.
+    # weld maps the shaft direction to club z (rows, not columns)
     R_weld = torch.stack([f, torch.linalg.cross(a, f), a], dim=0)
     w = torch.sqrt(torch.clamp(1 + R_weld.trace(), min=1e-9)) / 2
     q = torch.tensor([
@@ -211,8 +230,7 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
     print(f"clubhead->ball {torch.linalg.norm(ball - clubhead).item():.4f} m   (face gap {args.ball_gap} m)")
     print()
     print("# --- paste into envs/golf/golfer.py ---")
-    # the full shift, x/y included: the score() recentred the feet on the origin, so the
-    # root has to carry that offset too or the body lands somewhere else entirely.
+    # full shift incl. x/y: score() recentred the feet on the origin
     print(f"    pos=({shift[0, 0].item():.3f}, {shift[0, 1].item():.3f}, {EVAL_Z + shift[0, 2].item():.3f}),")
     print(f"    rot=({root_quat[0]:.4f}, {root_quat[1]:.4f}, {root_quat[2]:.4f}, {root_quat[3]:.4f}),")
     print("ADDRESS_JOINT_POS = {")

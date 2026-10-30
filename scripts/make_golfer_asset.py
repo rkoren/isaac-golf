@@ -16,7 +16,7 @@ HEAD_SIZE = (0.04, 0.10, 0.05)
 CLUB_MASS = 0.31
 GRIP_Z = 0.85 # where hand grabs
 # club orientation in hand
-WELD_ROT = (0.29709, 0.56742, 0.76116, -0.10201) # (w,x,y,z), usd order
+WELD_ROT = (0.30447, 0.55934, 0.76381, -0.10502) # (w,x,y,z), usd order
 
 REPO = Path(__file__).resolve().parents[1]
 UPSTREAM = "{ISAAC}/Robots/IsaacSim/Humanoid/humanoid.usd"
@@ -45,8 +45,7 @@ def build_golfer(humanoid_rel: str, out: Path) -> None:
 
     head = UsdGeom.Cube.Define(stage, "/golfer/club/head")
     head.CreateSizeAttr(1.0)
-    # size is the edge length: a size=1 cube spans -0.5..0.5, so scale by the full extents
-    # (was HEAD_SIZE / 2, which built a head half as big on every axis)
+    # cube size is edge length, so scale by full extents
     head.AddScaleOp().Set(Gf.Vec3f(*HEAD_SIZE))
     UsdPhysics.CollisionAPI.Apply(head.GetPrim())
 

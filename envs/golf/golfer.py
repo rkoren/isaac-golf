@@ -18,19 +18,25 @@ LEAD_HAND = "left_hand"
 TRAIL_HAND = "right_hand"
 
 ADDRESS_JOINT_POS = {
-    "lower_waist:0": -0.001,
-    "lower_waist:1": -0.760,
-    "pelvis": -0.007,
-    "right_thigh:1": -0.512,
-    "left_thigh:1": -0.587,
-    "right_shin": -0.631,
-    "left_shin": -0.571,
-    "left_upper_arm:0": 0.756,
-    "left_upper_arm:2": 0.129,
-    "left_lower_arm": -0.797,
-    "right_upper_arm:0": 0.751,
-    "right_upper_arm:2": 0.080,
-    "right_lower_arm": -0.725,
+    "lower_waist:0": 0.015,
+    "lower_waist:1": -0.642,
+    "pelvis": 0.041,
+    "right_thigh:0": -0.142,
+    "left_thigh:0": -0.157,
+    "right_thigh:1": -0.531,
+    "left_thigh:1": -0.528,
+    "right_foot:0": -0.156,
+    "right_foot:1": 0.053,
+    "left_foot:0": -0.150,
+    "left_foot:1": -0.058,
+    "right_shin": -0.497,
+    "left_shin": -0.492,
+    "left_upper_arm:0": 0.750,
+    "left_upper_arm:2": 0.022,
+    "left_lower_arm": -0.758,
+    "right_upper_arm:0": 0.848,
+    "right_upper_arm:2": 0.066,
+    "right_lower_arm": -0.803,
 }
 
 GOLFER_CFG = ArticulationCfg(
@@ -53,8 +59,8 @@ GOLFER_CFG = ArticulationCfg(
         copy_from_source=False,
     ),
     init_state=ArticulationCfg.InitialStateCfg(
-        pos=(0.123, 0.003, 1.177),
-        rot=(0.0014, 0.4383, 0.0007, 0.8988),  # (x, y, z, w)
+        pos=(0.123, 0.001, 1.178),
+        rot=(-0.0190, 0.4061, -0.0118, 0.9135),  # (x, y, z, w)
         joint_pos=ADDRESS_JOINT_POS,
     ),
     actuators={

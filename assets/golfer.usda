@@ -49,7 +49,7 @@ def Xform "golfer" (
         point3f physics:localPos0 = (0, 0, 0)
         point3f physics:localPos1 = (0, 0, 0.85)
         quatf physics:localRot0 = (1, 0, 0, 0)
-        quatf physics:localRot1 = (0.29709, 0.56742, 0.76116, -0.10201)
+        quatf physics:localRot1 = (0.30447, 0.55934, 0.76381, -0.10502)
     }
 
     over "left_hand" (

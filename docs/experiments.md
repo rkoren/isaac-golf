@@ -261,3 +261,50 @@ the strike (70% fell), which Stage 0 allows.
 Swings are archived per stage from here on: `scripts/archive_run.py` → `media/` (Kit clip per
 checkpoint, side-by-side progression, swing viewer; index in `media/index.md`). Run 3 and the
 fixed-env validation run are archived as the first two Stage 0 entries.
+
+## Athletic stance + balance (2026-10-30)
+
+Address re-solved with stance costs: feet **0.40 m** apart (was 0.18; shoulders 0.34), knees
+**25°** (was 31–36°), flat feet, centre of mass over their middle, 0 overlaps. Balance terms:
+torso below 0.95 m and feet sliding > 3 cm, 10 per m per second; post-impact finish 0.5 → 1 s.
+
+| run | setup | contact | ball speed | clubhead | smash | fell | ball heads |
+|---|---|---|---|---|---|---|---|
+| 5 `athletic` | balance on **from scratch** | 0% | — | 5.8 m/s | — | 6% | — |
+| 6 `athletic_strike` | balance off, 300 iters | 100% | 18.6 m/s | 21.5 m/s | 1.00 | 100% | −174° (backwards) |
+| 7 `athletic_balance` | resumed from 6, balance on, 300 iters | 100% | **30.2 m/s** | **31.8 m/s** | 1.00 | 98% | −164° (backwards) |
+
+(64 rollouts at each run's last checkpoint, mean actions.)
+
+**Run 5 is run 1 again.** From scratch the balance penalty (~30–60 per episode while the
+untrained policy falls) dwarfs the rare strike, so the policy learned to stand still. Balance is
+off by default now and only switched on when resuming from a striking checkpoint.
+
+**Run 7 swung harder instead of staying up.** At weight 10 a fall costs ~5 per episode and a
+30 m/s strike pays ~90, so falling is worth it; torso height during training only went 0.48 → 0.55 m.
+
+**Runs 6 and 7 strike backhanded** (smash exactly 1.00, ball backwards). Run 4's face-first swing
+was a lucky draw, not something the smash floor reliably produces: the backhand basin is just as
+easy to fall into.
+
+**Takeaways**
+- Shaping that's easy to satisfy dominates until the task reward shows up. Stage it in by checkpoint.
+- A penalty only buys behaviour if it costs more than what breaking it earns.
+- One run's emergent behaviour isn't a property of the reward. Check a second seed before claiming it.
+
+## Backwards hits punished (2026-10-30)
+
+Rule: a strike with the back of the head, or a launch heading > 90° off the target line, pays no
+ball speed and costs a one-off 20 (a forward strike pays ~90). No golf shot goes backwards.
+Strike stage from scratch (balance off), 300 iters, two seeds:
+
+| run | backwards (training, first → last) | contact | smash | ball speed | heading | fell |
+|---|---|---|---|---|---|---|
+| 8 `nobackwards_s1` | 43% → 0% | 100% | 1.15 | 23.2 m/s | +16° (13 to 17) | 98% |
+| 9 `nobackwards_s2` | 38% → 0% | 100% | 1.17 | 27.0 m/s | +20° (15 to 22) | 100% |
+
+(last checkpoint, 64 rollouts, mean actions; heading + is right of target for this right-hander)
+
+Both seeds abandon the backhand and strike face-first, forward, so this holds where run 4's
+direction didn't. Strikes are a consistent ~18° push: Stage 3's direction term is what tightens
+that. Balance is the next stage, resumed from run 9.

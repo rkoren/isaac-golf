@@ -47,6 +47,14 @@ def report(u, label: str) -> None:
     print(f"  clubhead->ball dist {u.club_ball_dist[0]:.3f} m   (mean {u.club_ball_dist.mean():.3f})")
     print(f"  hands apart         {torch.linalg.norm(u.trail_pos - u.lead_pos, dim=-1)[0]:.3f} m")
     print(f"  clubhead height     {(u.club_pos - org)[0, 2]:+.3f} m")
+    b = lambda n: u.robot.data.body_link_pos_w.torch[0, u.robot.body_names.index(n)]
+    knee = lambda s: torch.rad2deg(torch.arccos(torch.nn.functional.cosine_similarity(
+        b(f"{s}_shin") - b(f"{s}_thigh"), b(f"{s}_foot") - b(f"{s}_shin"), dim=0))).item()
+    spine = b("torso") - b("pelvis")
+    tilt = torch.rad2deg(torch.arccos(spine[2] / torch.linalg.norm(spine))).item()
+    print(f"  stance (feet apart) {(b('left_foot') - b('right_foot'))[1]:.3f} m   shoulders "
+          f"{(b('left_upper_arm') - b('right_upper_arm'))[1]:.3f} m")
+    print(f"  knee flex L/R       {knee('left'):.0f} / {knee('right'):.0f} deg   spine tilt {tilt:.0f} deg")
 
 
 def overlaps(u) -> list[tuple[float, str, str]]:

@@ -4,8 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Swing viewer</title>
-<!-- template for scripts/record_swings.py, which swaps the data placeholder for recorded swings.
-     no dependencies: canvas 2d plus a tiny projection, so it opens offline from disk. -->
+<!-- template for scripts/record_swings.py; no dependencies, opens offline -->
 <style>
   :root {
     --bg: #111418; --panel: #181c22; --raise: #222934; --line: #262c35; --edge: #3d4757;
@@ -143,6 +142,7 @@ const isClub = b => b === "clubhead" || b === "shaft";
 function strikeChip(e) {
   if (!e.struck) return '<span class="chip miss">untouched</span>';
   if (!e.struck.armed) return '<span class="chip knock" title="the club touched the ball before the backswing armed it: the tee hold puts it back and it pays nothing">early touch</span>';
+  if (e.backwards) return '<span class="chip fell">backwards</span>';
   return `<span class="chip ${isClub(e.struck.by) ? "hit" : "body"}">${partName(e.struck.by)}</span>`;
 }
 
@@ -180,9 +180,7 @@ function centre(ep, t, keep) {
   DATA.prims.forEach(p => { if (keep(p)) pts.push(...(p.k === "cap" ? [P(ep, t, p.a), P(ep, t, p.b)] : [P(ep, t, p.c)])); });
   return pts.reduce(add, [0, 0, 0]).map(v => v / Math.max(pts.length, 1));
 }
-// presets come from the body, not from assumptions about the setup: "face-on" sits in front
-// of the chest (perpendicular to the shoulder line, on the side the head leans), "down the
-// line" looks along the target direction. if the address pose is off, these views show it.
+// face-on: in front of the chest (from the shoulder line); down the line: along the target
 function presets(ep) {
   const c = centre(ep, 0, p => p.part === "core"), b = P(ep, 0, BALL), td = M.targetDir;
   const sh = DATA.prims.find(p => p.body === "torso" && p.k === "cap");
@@ -350,7 +348,7 @@ function drawTrails(ep, t) {
       line3(P(ep, f - 1, CLUB_HEAD.c), P(ep, f, CLUB_HEAD.c), speedColor(S(ep, f, SC.club) / vmax), 2.5 * dpr);
     }
   }
-  // keyed on when the ball first moved, not the contact detector: a kick never trips the detector
+  // keyed on when the ball first moved
   const hf = ep.struck ? ep.struck.frame : -1;
   if (hf >= 0 && t > hf - 1) {  // ball path after the strike
     for (let f = hf; f <= t; f++) line3(P(ep, f - 1, BALL), P(ep, f, BALL), "rgba(255, 47, 168, .85)", 2 * dpr, [4 * dpr, 4 * dpr]);
@@ -468,6 +466,7 @@ function renderSidebar() {
     ["Touched before backswing", pct(s.pre_arm_touch_rate ?? s.reset_knock_rate)],
     ["Ball speed paid, mean", `${s.mean_paid_ball_speed.toFixed(2)} m/s`],
     ...(s.mean_smash ? [["Smash factor, mean strike", s.mean_smash.toFixed(2)]] : []),
+    ...(s.backwards_rate !== undefined ? [["Hit backwards", pct(s.backwards_rate)]] : []),
     ["Ball speed, mean max", `${s.mean_max_ball_speed.toFixed(2)} m/s`],
     ["Clubhead, mean max", `${s.mean_max_club_speed.toFixed(2)} m/s`],
     ["Fell over", pct(s.fell_rate)],
