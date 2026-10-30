@@ -1,0 +1,595 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Swing viewer</title>
+<!-- template for scripts/record_swings.py, which swaps the data placeholder for recorded swings.
+     no dependencies: canvas 2d plus a tiny projection, so it opens offline from disk. -->
+<style>
+  :root {
+    --bg: #111418; --panel: #181c22; --raise: #222934; --line: #262c35; --edge: #3d4757;
+    --text: #e6e9ee; --muted: #8b95a3;
+    --ball: #ff2fa8; --club: #f0a04b; --dist: #7d8796; --warn: #e5a13a;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
+    font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  #app { display: grid; grid-template-columns: 290px minmax(0, 1fr); grid-template-rows: auto 1fr; height: 100vh; }
+  header { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline;
+    padding: 10px 16px; border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  header .meta { color: var(--muted); font-size: 12px; }
+  aside { border-right: 1px solid var(--line); overflow: auto; padding: 12px; display: flex;
+    flex-direction: column; gap: 12px; min-height: 0; }
+  .label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 6px; }
+  .tabs { display: flex; flex-wrap: wrap; gap: 6px; }
+  button, select { background: var(--panel); color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; padding: 5px 9px; font: inherit; cursor: pointer; }
+  button:hover { border-color: var(--edge); }
+  button.on { background: #2b3340; border-color: #4b5668; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+  .stats { display: grid; grid-template-columns: 1fr auto; gap: 3px 10px; margin: 0; }
+  .stats dt { color: var(--muted); }
+  .stats dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+  .note { color: var(--muted); font-size: 12px; margin-top: 8px; }
+  .eps { display: flex; flex-direction: column; gap: 2px; }
+  .ep { display: grid; grid-template-columns: 34px 1fr; gap: 8px; align-items: center; padding: 6px 8px;
+    border-radius: 6px; border: 1px solid transparent; cursor: pointer; }
+  .ep:hover { background: var(--panel); }
+  .ep.on { background: var(--raise); border-color: var(--edge); }
+  .ep .rk { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .ep .nums { font-variant-numeric: tabular-nums; }
+  .ep .sub { color: var(--muted); font-size: 11px; }
+  .badges { display: flex; gap: 4px; align-items: center; margin-top: 3px; }
+  .chip { display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 10.5px; font-weight: 600;
+    letter-spacing: .03em; }
+  .chip.hit { background: var(--ball); color: #fff; }
+  .chip.miss { background: #2b313b; color: var(--muted); }
+  .chip.fell { background: #3b3020; color: var(--warn); }
+  .chip.armed { background: #3a4250; color: #cfd6e0; }
+  .chip.body { background: #3b3020; color: var(--warn); }
+  .chip.knock { background: #2b313b; color: #b7c0cc; }
+  .struck { margin-top: 8px; font-size: 12px; }
+  .struck span { color: var(--muted); }
+  main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  #view { flex: 1; min-height: 0; position: relative; }
+  #view canvas { position: absolute; inset: 0; width: 100%; height: 100%; cursor: grab; touch-action: none; }
+  #view canvas:active { cursor: grabbing; }
+  #hud { position: absolute; top: 10px; left: 12px; background: rgba(17, 20, 24, .74); padding: 8px 10px;
+    border-radius: 8px; font-variant-numeric: tabular-nums; pointer-events: none; min-width: 190px; }
+  #hud .row { display: flex; justify-content: space-between; gap: 14px; }
+  #hud .k { color: var(--muted); }
+  #hud .chips { margin-top: 6px; display: flex; gap: 4px; min-height: 18px; }
+  #bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 8px 12px;
+    border-top: 1px solid var(--line); }
+  .grp { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+  .sep { width: 1px; height: 22px; background: var(--line); }
+  .keys { color: var(--muted); font-size: 11px; margin-left: auto; }
+  #timeline { height: 104px; border-top: 1px solid var(--line); }
+  #timeline canvas { width: 100%; height: 100%; display: block; cursor: ew-resize; touch-action: none; }
+  #empty { padding: 40px; color: var(--muted); }
+  @media (max-width: 760px) {
+    #app { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto 1fr; height: auto; min-height: 100vh; }
+    aside { max-height: 40vh; border-right: 0; border-bottom: 1px solid var(--line); }
+    #view { min-height: 360px; }
+    .keys { display: none; }
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <header><h1>Swing viewer</h1><span class="meta" id="meta"></span></header>
+  <aside>
+    <div><div class="label">Checkpoint</div><div class="tabs" id="tabs"></div></div>
+    <div class="card"><dl class="stats" id="stats"></dl><div class="note" id="note"></div></div>
+    <div><div class="label">Episodes, most paid to least</div><div class="eps" id="eps"></div></div>
+  </aside>
+  <main>
+    <div id="view"><canvas id="scene"></canvas><div id="hud"></div></div>
+    <div id="bar">
+      <div class="grp">
+        <button id="b-start" title="First frame (Home)">&#x23EE;</button>
+        <button id="b-back" title="Back one frame (&larr;)">&#x25C0;</button>
+        <button id="b-play" title="Play / pause (space)">Pause</button>
+        <button id="b-fwd" title="Forward one frame (&rarr;)">&#x25B6;</button>
+        <select id="speed" title="Playback speed ([ and ])">
+          <option value="1">1&times;</option><option value="0.5">0.5&times;</option>
+          <option value="0.25" selected>0.25&times;</option><option value="0.1">0.1&times;</option>
+        </select>
+      </div>
+      <div class="sep"></div>
+      <div class="grp" id="views">
+        <button data-view="face" title="Face-on: in front of the golfer's chest (1)">Face-on</button>
+        <button data-view="dtl" title="Down the line (2)">Down the line</button>
+        <button data-view="top" title="Overhead (3)">Overhead</button>
+      </div>
+      <div class="sep"></div>
+      <div class="grp">
+        <button id="t-trail" class="on" title="Clubhead path, coloured by speed (T)">Club path</button>
+        <button id="t-ghost" title="Address pose, faint (G)">Address ghost</button>
+      </div>
+      <span class="keys">space play &middot; &larr;&rarr; frame &middot; &uarr;&darr; episode &middot; drag orbit &middot; wheel zoom</span>
+    </div>
+    <div id="timeline"><canvas id="chart"></canvas></div>
+  </main>
+</div>
+<script id="swing-data" type="application/json">__SWING_DATA__</script>
+<script>
+"use strict";
+let DATA;
+try { DATA = JSON.parse(document.getElementById("swing-data").textContent); }
+catch (e) {
+  document.getElementById("app").innerHTML =
+    '<div id="empty">No swing data in this file. This is the template: run scripts/record_swings.py to make a viewer.</div>';
+  throw e;
+}
+
+const M = DATA.meta, NP = DATA.nPts, BALL = NP - 1, NSC = 7;
+const SC = { club: 0, ball: 1, dist: 2, torso: 3, armed: 4, impacted: 5, reward: 6 };
+const COLORS = { core: "#e9a35b", lead: "#d9722f", trail: "#f4c590", shaft: "#cfd5dd", head: "#3a414d" };
+const OUTLINE = "rgba(40, 24, 10, .55)";
+const CLUB_HEAD = DATA.prims.find(p => p.k === "box" && p.part === "club");
+const $ = id => document.getElementById(id);
+const PART_NAMES = {
+  clubhead: "clubhead", shaft: "shaft", torso: "torso", head: "head", lower_waist: "waist", pelvis: "pelvis",
+  left_upper_arm: "left upper arm", left_lower_arm: "left forearm", left_hand: "left hand",
+  right_upper_arm: "right upper arm", right_lower_arm: "right forearm", right_hand: "right hand",
+  left_thigh: "left thigh", left_shin: "left shin", left_foot: "left foot",
+  right_thigh: "right thigh", right_shin: "right shin", right_foot: "right foot",
+};
+const partName = b => PART_NAMES[b] || b.replace(/_/g, " ");
+const isClub = b => b === "clubhead" || b === "shaft";
+function strikeChip(e) {
+  if (!e.struck) return '<span class="chip miss">untouched</span>';
+  if (!e.struck.armed) return '<span class="chip knock" title="ball moved before the backswing: club pushed into it at reset">reset knock</span>';
+  return `<span class="chip ${isClub(e.struck.by) ? "hit" : "body"}">${partName(e.struck.by)}</span>`;
+}
+
+// ---------- data ----------
+function b64(s, Type) {
+  const bin = atob(s), u8 = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+  return new Type(u8.buffer);
+}
+function decode(ep) {  // lazily, one episode at a time
+  if (!ep._pts) { ep._pts = b64(ep.pts, Int16Array); ep._sc = b64(ep.sc, Float32Array); }
+  return ep;
+}
+const P = (ep, t, i) => { const a = ep._pts, o = (t * NP + i) * 3; return [a[o] / 1000, a[o + 1] / 1000, a[o + 2] / 1000]; };
+const S = (ep, t, k) => ep._sc[t * NSC + k];
+
+// ---------- vectors ----------
+const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+const add = (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+const mul = (a, s) => [a[0] * s, a[1] * s, a[2] * s];
+const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+const norm = a => { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / l, a[1] / l, a[2] / l]; };
+
+// ---------- state ----------
+const st = {
+  ck: DATA.checkpoints.length - 1, ep: 0, t: 0, acc: 0, hold: 0,
+  playing: true, speed: 0.25, trail: true, ghost: false, view: "face",
+};
+const cam = { yaw: 0, pitch: 0.15, dist: 4, target: [0.4, 0, 0.7], fov: 36 * Math.PI / 180 };
+const cur = () => decode(DATA.checkpoints[st.ck].episodes[st.ep]);
+
+function centre(ep, t, keep) {
+  const pts = [];
+  DATA.prims.forEach(p => { if (keep(p)) pts.push(...(p.k === "cap" ? [P(ep, t, p.a), P(ep, t, p.b)] : [P(ep, t, p.c)])); });
+  return pts.reduce(add, [0, 0, 0]).map(v => v / Math.max(pts.length, 1));
+}
+// presets come from the body, not from assumptions about the setup: "face-on" sits in front
+// of the chest (perpendicular to the shoulder line, on the side the head leans), "down the
+// line" looks along the target direction. if the address pose is off, these views show it.
+function presets(ep) {
+  const c = centre(ep, 0, p => p.part === "core"), b = P(ep, 0, BALL), td = M.targetDir;
+  const sh = DATA.prims.find(p => p.body === "torso" && p.k === "cap");
+  let f = norm([b[0] - c[0], b[1] - c[1], 0]);  // fallback for an unknown body: face the ball
+  if (sh) {
+    const lat = sub(P(ep, 0, sh.b), P(ep, 0, sh.a));
+    const lean = sub(centre(ep, 0, p => p.body === "head"), centre(ep, 0, p => p.body === "pelvis"));
+    f = norm([-lat[1], lat[0], 0]);
+    if (f[0] * lean[0] + f[1] * lean[1] < 0) f = mul(f, -1);
+  }
+  const target = [(c[0] + b[0]) / 2, (c[1] + b[1]) / 2, 0.7];
+  const face = Math.atan2(f[1], f[0]);
+  return {
+    face: { yaw: face, pitch: 0.14, dist: 4.0, target },
+    dtl: { yaw: Math.atan2(-td[1], -td[0]), pitch: 0.16, dist: 4.4, target },
+    top: { yaw: face, pitch: 1.35, dist: 4.6, target },
+  };
+}
+function setView(v) {
+  st.view = v;
+  if (v !== "free") Object.assign(cam, presets(cur())[v]);
+  document.querySelectorAll("#views button").forEach(b => b.classList.toggle("on", b.dataset.view === v));
+}
+
+// ---------- camera ----------
+const NEAR = 0.05;
+let W = 1, H = 1, F = 1, eye, fw, rt, up;
+function setupCamera() {
+  const cp = Math.cos(cam.pitch);
+  eye = add(cam.target, mul([cp * Math.cos(cam.yaw), cp * Math.sin(cam.yaw), Math.sin(cam.pitch)], cam.dist));
+  fw = norm(sub(cam.target, eye));
+  rt = norm(cross(fw, [0, 0, 1]));
+  up = cross(rt, fw);
+  F = (H / 2) / Math.tan(cam.fov / 2);
+}
+const toCam = p => { const d = sub(p, eye); return [dot(d, rt), dot(d, up), dot(d, fw)]; };
+const toScr = c => [W / 2 + F * c[0] / c[2], H / 2 - F * c[1] / c[2]];
+function clipPoly(poly) {  // camera-space polygon against the near plane
+  const out = [];
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i], b = poly[(i + 1) % poly.length], ai = a[2] >= NEAR, bi = b[2] >= NEAR;
+    if (ai) out.push(a);
+    if (ai !== bi) { const k = (NEAR - a[2]) / (b[2] - a[2]); out.push([a[0] + k * (b[0] - a[0]), a[1] + k * (b[1] - a[1]), NEAR]); }
+  }
+  return out;
+}
+function clipSeg(a, b) {
+  if (a[2] < NEAR && b[2] < NEAR) return null;
+  if (a[2] < NEAR) a = add(a, mul(sub(b, a), (NEAR - a[2]) / (b[2] - a[2])));
+  if (b[2] < NEAR) b = add(b, mul(sub(a, b), (NEAR - b[2]) / (a[2] - b[2])));
+  return [a, b];
+}
+
+// ---------- scene ----------
+const scene = $("scene"), g = scene.getContext("2d");
+let dpr = 1;
+
+function drawGround() {
+  // horizon: where a horizontal ray along the view direction lands on screen
+  const h = toCam(add(eye, norm([fw[0], fw[1], 0])));
+  const hy = h[2] > 1e-3 ? Math.min(H, toScr(h)[1]) : -1;
+  const sky = g.createLinearGradient(0, 0, 0, Math.max(hy, 1));
+  sky.addColorStop(0, "#9cc7e8"); sky.addColorStop(1, "#dcebf5");
+  g.fillStyle = sky; g.fillRect(0, 0, W, Math.max(hy, 0));
+  g.fillStyle = "#6aa84f"; g.fillRect(0, Math.max(hy, 0), W, H);
+
+  // mowing stripes run along the target line
+  const td = norm([M.targetDir[0], M.targetDir[1], 0]), n = [td[1], -td[0], 0], w = 1.2, L = 25;
+  for (let k = -20; k < 20; k++) {
+    const q = [mul(n, k * w), mul(n, (k + 1) * w)];
+    const poly = clipPoly([add(q[0], mul(td, -L)), add(q[1], mul(td, -L)), add(q[1], mul(td, L)), add(q[0], mul(td, L))].map(toCam));
+    if (poly.length < 3) continue;
+    g.fillStyle = k & 1 ? "#5f9d47" : "#6fb155";
+    g.beginPath(); poly.map(toScr).forEach(([x, y], i) => i ? g.lineTo(x, y) : g.moveTo(x, y)); g.fill();
+  }
+  if (hy > 0) {  // haze so the stripes don't alias into the horizon
+    const hz = g.createLinearGradient(0, hy, 0, hy + H * 0.14);
+    hz.addColorStop(0, "rgba(220, 235, 245, .95)"); hz.addColorStop(1, "rgba(220, 235, 245, 0)");
+    g.fillStyle = hz; g.fillRect(0, hy, W, H * 0.14);
+  }
+}
+
+function line3(a, b, color, px, dash) {
+  const s = clipSeg(toCam(a), toCam(b)); if (!s) return;
+  const [p, q] = s.map(toScr);
+  g.strokeStyle = color; g.lineWidth = px; g.setLineDash(dash || []);
+  g.beginPath(); g.moveTo(p[0], p[1]); g.lineTo(q[0], q[1]); g.stroke(); g.setLineDash([]);
+}
+
+function drawAimLine(ep) {
+  const b = P(ep, 0, BALL), base = [b[0], b[1], 0.002], td = norm([M.targetDir[0], M.targetDir[1], 0]);
+  line3(base, add(base, mul(td, 6)), "rgba(255, 255, 255, .55)", 1.5 * dpr, [6 * dpr, 6 * dpr]);
+  const tip = add(base, mul(td, 6)), n = [td[1], -td[0], 0];
+  line3(tip, add(add(tip, mul(td, -0.25)), mul(n, 0.12)), "rgba(255, 255, 255, .7)", 1.5 * dpr);
+  line3(tip, add(add(tip, mul(td, -0.25)), mul(n, -0.12)), "rgba(255, 255, 255, .7)", 1.5 * dpr);
+}
+
+// one frame of the body as depth-sortable drawables. flat=true squashes onto the ground (shadow)
+function bodyItems(ep, t, flat) {
+  const pt = i => { const p = P(ep, t, i); return flat ? [p[0], p[1], 0.003] : p; };
+  const items = [];
+  for (const p of DATA.prims) {
+    if (p.k === "cap") {
+      const a = pt(p.a), b = pt(p.b);
+      items.push({ kind: "cap", a, b, r: p.r, color: p.part === "club" ? COLORS.shaft : COLORS[p.part], z: toCam(mul(add(a, b), 0.5))[2] });
+    } else if (p.k === "sph") {
+      const c = pt(p.c);
+      items.push({ kind: "sph", c, r: p.r, color: COLORS[p.part], z: toCam(c)[2] });
+    } else {
+      const c = pt(p.c);
+      items.push({ kind: "box", c, ex: sub(pt(p.x), c), ey: sub(pt(p.y), c), ez: sub(pt(p.z), c), z: toCam(c)[2] });
+    }
+  }
+  return items;
+}
+
+function drawItem(it, mode) {  // mode: "solid" | "shadow" | "ghost"
+  const shadow = mode === "shadow", ghost = mode === "ghost";
+  if (it.kind === "cap") {
+    const s = clipSeg(toCam(it.a), toCam(it.b)); if (!s) return;
+    const [p, q] = s.map(toScr), px = Math.max(1.5, 2 * it.r * F / ((s[0][2] + s[1][2]) / 2));
+    g.lineCap = "round";
+    if (mode === "solid") { g.strokeStyle = OUTLINE; g.lineWidth = px + 2 * dpr; g.beginPath(); g.moveTo(p[0], p[1]); g.lineTo(q[0], q[1]); g.stroke(); }
+    g.strokeStyle = shadow ? "rgba(25, 50, 15, .22)" : ghost ? "rgba(255, 255, 255, .22)" : it.color;
+    g.lineWidth = px; g.beginPath(); g.moveTo(p[0], p[1]); g.lineTo(q[0], q[1]); g.stroke();
+  } else if (it.kind === "sph" || it.kind === "ball") {
+    const c = toCam(it.c); if (c[2] < NEAR) return;
+    const [x, y] = toScr(c), rp = it.r * F / c[2];
+    if (it.kind === "ball" && !shadow) {  // glow so it survives any zoom level
+      const R = Math.max(12 * dpr, rp * 5), halo = g.createRadialGradient(x, y, 0, x, y, R);
+      halo.addColorStop(0, "rgba(255, 47, 168, .6)"); halo.addColorStop(1, "rgba(255, 47, 168, 0)");
+      g.fillStyle = halo; g.beginPath(); g.arc(x, y, R, 0, 7); g.fill();
+    }
+    g.fillStyle = shadow ? "rgba(25, 50, 15, .22)" : ghost ? "rgba(255, 255, 255, .22)" : it.color;
+    g.beginPath(); g.arc(x, y, Math.max(it.kind === "ball" ? 3 * dpr : 1.5, rp), 0, 7); g.fill();
+    if (mode === "solid") { g.strokeStyle = it.kind === "ball" ? "#fff" : OUTLINE; g.lineWidth = dpr; g.stroke(); }
+  } else if (it.kind === "box") {
+    // convex box: draw only faces turned toward the camera, so no sorting needed within it
+    const ax = [it.ex, it.ey, it.ez], light = norm([0.4, -0.3, 0.85]);
+    for (let a = 0; a < 3; a++) for (const sgn of [1, -1]) {
+      const nrm = mul(ax[a], sgn), fc = add(it.c, nrm);
+      if (!shadow && dot(nrm, sub(eye, fc)) <= 0) continue;
+      const u = ax[(a + 1) % 3], v = ax[(a + 2) % 3];
+      const poly = clipPoly([add(add(fc, u), v), add(sub(fc, u), v), sub(sub(fc, u), v), sub(add(fc, u), v)].map(toCam));
+      if (poly.length < 3) continue;
+      const shade = 0.55 + 0.45 * Math.abs(dot(norm(nrm), light));
+      g.fillStyle = shadow ? "rgba(25, 50, 15, .22)" : ghost ? "rgba(255, 255, 255, .18)" : `rgb(${58 * shade + 20}, ${65 * shade + 20}, ${77 * shade + 22})`;
+      g.beginPath(); poly.map(toScr).forEach(([x, y], i) => i ? g.lineTo(x, y) : g.moveTo(x, y)); g.closePath(); g.fill();
+      if (mode === "solid") { g.strokeStyle = "rgba(0, 0, 0, .5)"; g.lineWidth = dpr; g.stroke(); }
+    }
+  }
+}
+
+function speedColor(f) {  // slow blue -> yellow -> fast red
+  const stops = [[74, 163, 255], [255, 210, 63], [255, 77, 77]];
+  f = Math.min(1, Math.max(0, f)) * 2; const i = Math.min(1, Math.floor(f)), k = f - i;
+  const a = stops[i], b = stops[i + 1];
+  return `rgb(${a[0] + (b[0] - a[0]) * k | 0}, ${a[1] + (b[1] - a[1]) * k | 0}, ${a[2] + (b[2] - a[2]) * k | 0})`;
+}
+
+function drawTrails(ep, t) {
+  if (st.trail && CLUB_HEAD) {
+    const vmax = Math.max(ep.maxClub, 1e-3);
+    for (let f = 1; f <= t; f++) {
+      line3(P(ep, f - 1, CLUB_HEAD.c), P(ep, f, CLUB_HEAD.c), speedColor(S(ep, f, SC.club) / vmax), 2.5 * dpr);
+    }
+  }
+  // keyed on when the ball first moved, not the contact detector: a kick never trips the detector
+  const hf = ep.struck ? ep.struck.frame : -1;
+  if (hf >= 0 && t > hf - 1) {  // ball path after the strike
+    for (let f = hf; f <= t; f++) line3(P(ep, f - 1, BALL), P(ep, f, BALL), "rgba(255, 47, 168, .85)", 2 * dpr, [4 * dpr, 4 * dpr]);
+  }
+  if (hf >= 0 && t >= hf && t < hf + 24) {  // strike burst: magenta for the club, amber for anything else
+    const c = toCam(P(ep, Math.max(hf - 1, 0), BALL));
+    if (c[2] > NEAR) {
+      const [x, y] = toScr(c), k = (t - hf) / 24, rgb = isClub(ep.struck.by) ? "255, 47, 168" : "229, 161, 58";
+      g.strokeStyle = `rgba(${rgb}, ${1 - k})`; g.lineWidth = 3 * dpr;
+      g.beginPath(); g.arc(x, y, (10 + 50 * k) * dpr, 0, 7); g.stroke();
+    }
+  }
+}
+
+function drawScene() {
+  const ep = cur(), t = Math.min(st.t, ep.frames - 1);
+  setupCamera();
+  drawGround();
+  drawAimLine(ep);
+
+  const ball = P(ep, t, BALL), b0 = P(ep, 0, BALL);
+  const ballItem = { kind: "ball", c: ball, r: M.ballR, color: "#ff2fa8", z: toCam(ball)[2] };
+  bodyItems(ep, t, true).forEach(it => drawItem(it, "shadow"));
+  drawItem({ ...ballItem, c: [ball[0], ball[1], 0.003] }, "shadow");
+  if (st.ghost) bodyItems(ep, 0, false).sort((a, b) => b.z - a.z).forEach(it => drawItem(it, "ghost"));
+
+  const tee = { kind: "tee", z: toCam([b0[0], b0[1], M.teeH / 2])[2] };
+  const items = bodyItems(ep, t, false).concat([ballItem, tee]).sort((a, b) => b.z - a.z);
+  for (const it of items) {
+    if (it.kind === "tee") line3([b0[0], b0[1], 0], [b0[0], b0[1], M.teeH], "#f2f2f2", Math.max(2, 0.008 * F / it.z), []);
+    else drawItem(it, "solid");
+  }
+  drawTrails(ep, t);
+  drawHud(ep, t);
+}
+
+// ---------- hud / chart ----------
+function drawHud(ep, t) {
+  const ck = DATA.checkpoints[st.ck], armed = S(ep, t, SC.armed) > 0.5, hit = S(ep, t, SC.impacted) > 0.5;
+  $("hud").innerHTML =
+    `<div class="row"><span>iter ${ck.iter}</span><span class="k">rank ${ep.rank} of ${M.numEnvs}</span></div>` +
+    `<div class="row"><span class="k">time</span><span>${(t * M.dt).toFixed(2)} s &middot; ${t + 1}/${ep.frames}</span></div>` +
+    `<div class="row"><span class="k">clubhead</span><span>${S(ep, t, SC.club).toFixed(2)} m/s</span></div>` +
+    `<div class="row"><span class="k">ball</span><span>${S(ep, t, SC.ball).toFixed(2)} m/s</span></div>` +
+    `<div class="row"><span class="k">club&rarr;ball</span><span>${S(ep, t, SC.dist).toFixed(3)} m</span></div>` +
+    `<div class="row"><span class="k">torso height</span><span>${S(ep, t, SC.torso).toFixed(2)} m</span></div>` +
+    `<div class="chips">${armed ? '<span class="chip armed">ARMED</span>' : ""}${hit ? '<span class="chip hit">CONTACT</span>' : ""}` +
+    `${ep.struck && t >= ep.struck.frame ? strikeChip(ep) : ""}</div>`;
+}
+
+const chart = $("chart"), cg = chart.getContext("2d");
+const CH = { l: 46, r: 52, t: 12, b: 20 };
+function chartX(t, ep) { const w = chart.width - (CH.l + CH.r) * dpr; return CH.l * dpr + w * t / Math.max(ep.frames - 1, 1); }
+function drawChart() {
+  const ep = cur(), Wc = chart.width, Hc = chart.height, d = dpr;
+  cg.clearRect(0, 0, Wc, Hc);
+  const top = CH.t * d, bot = Hc - CH.b * d;
+  const vmax = Math.max(1, Math.ceil(Math.max(ep.maxClub, ep.maxBall)));
+  const y = v => bot - (bot - top) * v / vmax, yd = m => bot - (bot - top) * Math.min(m, 1);
+  cg.font = `${10.5 * d}px system-ui, sans-serif`; cg.textBaseline = "middle";
+
+  for (const v of [0, vmax / 2, vmax]) {  // grid
+    cg.strokeStyle = "#232931"; cg.lineWidth = d; cg.beginPath(); cg.moveTo(CH.l * d, y(v)); cg.lineTo(Wc - CH.r * d, y(v)); cg.stroke();
+    cg.fillStyle = "#8b95a3"; cg.textAlign = "right"; cg.fillText(v.toFixed(v % 1 ? 1 : 0), (CH.l - 6) * d, y(v));
+  }
+  cg.textAlign = "left";
+  cg.fillText("1 m", (Wc - CH.r * d) + 6 * d, yd(1)); cg.fillText("0", (Wc - CH.r * d) + 6 * d, yd(0));
+
+  const series = (k, color, fy, w) => {
+    cg.strokeStyle = color; cg.lineWidth = w * d; cg.beginPath();
+    for (let t = 0; t < ep.frames; t++) { const X = chartX(t, ep), Y = fy(S(ep, t, k)); t ? cg.lineTo(X, Y) : cg.moveTo(X, Y); }
+    cg.stroke();
+  };
+  series(SC.dist, "#5d6673", yd, 1.2);
+  series(SC.club, "#f0a04b", y, 1.8);
+  series(SC.ball, "#ff2fa8", y, 1.8);
+
+  const vline = (t, color, label, dash, row) => {
+    const X = chartX(t, ep); cg.strokeStyle = color; cg.lineWidth = d; cg.setLineDash(dash ? [3 * d, 3 * d] : []);
+    cg.beginPath(); cg.moveTo(X, top); cg.lineTo(X, bot); cg.stroke(); cg.setLineDash([]);
+    if (label) { cg.fillStyle = color; cg.fillText(label, X + 4 * d, top + (4 + 13 * (row || 0)) * d); }
+  };
+  let armedAt = -1;
+  for (let t = 0; t < ep.frames; t++) if (S(ep, t, SC.armed) > 0.5) { armedAt = t; break; }
+  if (armedAt >= 0) vline(armedAt, "#8b95a3", "armed", true, 0);
+  if (ep.struck) {
+    const c = !ep.struck.armed ? "#b7c0cc" : isClub(ep.struck.by) ? "#ff2fa8" : "#e5a13a";
+    vline(ep.struck.frame, c, ep.struck.armed ? `struck: ${partName(ep.struck.by)}` : "reset knock", true, 1);
+  }
+  if (ep.hitFrame >= 0) vline(ep.hitFrame, "#ff2fa8", "contact (detector)", false, 2);
+  vline(Math.min(st.t, ep.frames - 1), "#ffffff", null, false);
+
+  // legend top-right, time at both ends of the axis
+  cg.textBaseline = "top"; cg.textAlign = "right";
+  let lx = Wc - CH.r * d - 4 * d;
+  for (const [txt, col] of [["club→ball m (right axis)", "#7d8796"], ["ball m/s", "#ff2fa8"], ["clubhead m/s", "#f0a04b"]]) {
+    cg.fillStyle = col; cg.fillText(txt, lx, top); lx -= cg.measureText(txt).width + 14 * d;
+  }
+  cg.textBaseline = "alphabetic"; cg.fillStyle = "#8b95a3";
+  cg.textAlign = "left"; cg.fillText("0 s", CH.l * d, Hc - 4 * d);
+  cg.textAlign = "right"; cg.fillText(`${((ep.frames - 1) * M.dt).toFixed(2)} s`, Wc - CH.r * d, Hc - 4 * d);
+}
+
+// ---------- sidebar ----------
+const pct = x => `${Math.round(x * 100)}%`;
+function renderSidebar() {
+  const ck = DATA.checkpoints[st.ck], s = ck.summary;
+  $("tabs").innerHTML = DATA.checkpoints.map((c, i) => `<button class="${i === st.ck ? "on" : ""}" data-ck="${i}">iter ${c.iter}</button>`).join("");
+  const rows = [
+    ["Contact rate (detector)", pct(s.contact_rate)],
+    ["Struck by clubhead", pct(s.clubhead_strike_rate)],
+    ["Struck by body", pct(s.body_strike_rate)],
+    ["Knocked at reset", pct(s.reset_knock_rate)],
+    ["Ball speed paid, mean", `${s.mean_paid_ball_speed.toFixed(2)} m/s`],
+    ["Ball speed, mean max", `${s.mean_max_ball_speed.toFixed(2)} m/s`],
+    ["Clubhead, mean max", `${s.mean_max_club_speed.toFixed(2)} m/s`],
+    ["Fell over", pct(s.fell_rate)],
+    ["Closest approach", `${s.mean_min_dist.toFixed(3)} m`],
+    ["Return, mean", s.mean_return.toFixed(1)],
+    ["Action std", s.action_std.toFixed(2)],
+  ];
+  $("stats").innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("");
+  const by = Object.entries(s.struck_by);
+  $("note").innerHTML =
+    `<div class="struck">Struck after backswing: ${by.length ? by.map(([b, n]) => `${partName(b)} <span>&times;${n}</span>`).join(", ") : "nothing"}</div>` +
+    `<div style="margin-top:6px">"Paid" is ball speed gained after the backswing, which is what the reward pays; episodes are ranked by it. ` +
+    (M.stochastic ? `Actions sampled with noise, as in training.` :
+      `Actions are the policy mean; training adds noise of std ${s.action_std.toFixed(2)}, so training-time swings are messier.`) +
+    ` Stats over all ${M.numEnvs} rollouts.</div>`;
+  $("eps").innerHTML = ck.episodes.map((e, i) =>
+    `<div class="ep ${i === st.ep ? "on" : ""}" data-ep="${i}">` +
+    `<span class="rk">#${e.rank}</span>` +
+    `<span><div class="nums">paid ${e.paid.toFixed(2)} m/s &middot; club ${e.maxClub.toFixed(1)} m/s</div>` +
+    `<div class="badges">${strikeChip(e)}${e.fell ? '<span class="chip fell">fell</span>' : ""}` +
+    `<span class="sub">closest ${e.minDist.toFixed(3)} m</span></div></span>` +
+    `</div>`).join("");
+}
+
+function select(ck, ep) {
+  st.ck = Math.max(0, Math.min(DATA.checkpoints.length - 1, ck));
+  st.ep = Math.max(0, Math.min(DATA.checkpoints[st.ck].episodes.length - 1, ep));
+  st.t = 0; st.acc = 0; st.hold = 0;
+  if (st.view !== "free") setView(st.view);
+  renderSidebar();
+  $("eps").querySelector(".ep.on")?.scrollIntoView({ block: "nearest" });
+}
+
+// ---------- input ----------
+function setPlaying(p) { st.playing = p; $("b-play").textContent = p ? "Pause" : "Play"; }
+function step(n) { setPlaying(false); st.t = Math.max(0, Math.min(cur().frames - 1, st.t + n)); }
+
+$("tabs").addEventListener("click", e => { const b = e.target.closest("[data-ck]"); if (b) select(+b.dataset.ck, st.ep); });
+$("eps").addEventListener("click", e => { const r = e.target.closest("[data-ep]"); if (r) { select(st.ck, +r.dataset.ep); setPlaying(true); } });
+$("views").addEventListener("click", e => { const b = e.target.closest("[data-view]"); if (b) setView(b.dataset.view); });
+$("b-play").onclick = () => { if (!st.playing && st.t >= cur().frames - 1) st.t = 0; setPlaying(!st.playing); };
+$("b-back").onclick = () => step(-1);
+$("b-fwd").onclick = () => step(1);
+$("b-start").onclick = () => { setPlaying(false); st.t = 0; };
+$("speed").onchange = e => { st.speed = +e.target.value; };
+$("t-trail").onclick = e => { st.trail = !st.trail; e.target.classList.toggle("on", st.trail); };
+$("t-ghost").onclick = e => { st.ghost = !st.ghost; e.target.classList.toggle("on", st.ghost); };
+
+let drag = null;
+scene.addEventListener("pointerdown", e => { drag = { x: e.clientX, y: e.clientY, yaw: cam.yaw, pitch: cam.pitch }; scene.setPointerCapture(e.pointerId); });
+scene.addEventListener("pointermove", e => {
+  if (!drag) return;
+  if (st.view !== "free") setView("free");
+  cam.yaw = drag.yaw - (e.clientX - drag.x) * 0.008;
+  cam.pitch = Math.max(-0.05, Math.min(1.5, drag.pitch + (e.clientY - drag.y) * 0.006));
+});
+scene.addEventListener("pointerup", () => { drag = null; });
+scene.addEventListener("wheel", e => { e.preventDefault(); cam.dist = Math.max(1.2, Math.min(15, cam.dist * Math.exp(e.deltaY * 0.001))); }, { passive: false });
+scene.addEventListener("dblclick", () => setView("face"));
+
+let scrub = false;
+const scrubTo = e => {
+  const ep = cur(), r = chart.getBoundingClientRect(), x = (e.clientX - r.left) * dpr;
+  const w = chart.width - (CH.l + CH.r) * dpr;
+  st.t = Math.round(Math.max(0, Math.min(1, (x - CH.l * dpr) / w)) * (ep.frames - 1));
+};
+chart.addEventListener("pointerdown", e => { scrub = true; setPlaying(false); chart.setPointerCapture(e.pointerId); scrubTo(e); });
+chart.addEventListener("pointermove", e => { if (scrub) scrubTo(e); });
+chart.addEventListener("pointerup", () => { scrub = false; });
+
+const SPEEDS = ["1", "0.5", "0.25", "0.1"];
+window.addEventListener("keydown", e => {
+  if (e.target.tagName === "SELECT") return;
+  const k = e.key;
+  if (k === " ") { e.preventDefault(); $("b-play").click(); }
+  else if (k === "ArrowLeft") { e.preventDefault(); step(e.shiftKey ? -10 : -1); }
+  else if (k === "ArrowRight") { e.preventDefault(); step(e.shiftKey ? 10 : 1); }
+  else if (k === "ArrowUp") { e.preventDefault(); select(st.ck, st.ep - 1); setPlaying(true); }
+  else if (k === "ArrowDown") { e.preventDefault(); select(st.ck, st.ep + 1); setPlaying(true); }
+  else if (k === "Home") { setPlaying(false); st.t = 0; }
+  else if (k === "1") setView("face");
+  else if (k === "2") setView("dtl");
+  else if (k === "3") setView("top");
+  else if (k === "t" || k === "T") $("t-trail").click();
+  else if (k === "g" || k === "G") $("t-ghost").click();
+  else if (k === "[" || k === "]") {
+    const i = Math.max(0, Math.min(SPEEDS.length - 1, SPEEDS.indexOf(String(st.speed)) + (k === "]" ? -1 : 1)));
+    st.speed = +SPEEDS[i]; $("speed").value = SPEEDS[i];
+  }
+});
+
+// ---------- loop ----------
+function resize() {
+  dpr = window.devicePixelRatio || 1;
+  for (const c of [scene, chart]) { c.width = Math.max(1, c.clientWidth * dpr); c.height = Math.max(1, c.clientHeight * dpr); }
+  W = scene.width; H = scene.height;
+}
+new ResizeObserver(resize).observe($("view"));
+new ResizeObserver(resize).observe($("timeline"));
+
+let last = performance.now();
+function frame(now) {
+  const dt = Math.min(0.1, (now - last) / 1000); last = now;
+  const ep = cur();
+  if (st.playing) {
+    if (st.t >= ep.frames - 1) {  // hold the last frame briefly, then loop
+      st.hold += dt;
+      if (st.hold > 0.8) { st.t = 0; st.acc = 0; st.hold = 0; }
+    } else {
+      st.acc += dt * st.speed;
+      while (st.acc >= M.dt && st.t < ep.frames - 1) { st.t++; st.acc -= M.dt; }
+    }
+  }
+  drawScene();
+  drawChart();
+  requestAnimationFrame(frame);
+}
+
+const phys = { PhysxCfg: "PhysX", NewtonCfg: "Newton" }[M.physics] || M.physics;
+$("meta").textContent = `${M.run} · ${phys} · ${M.numEnvs} rollouts per checkpoint · ` +
+  `${M.stochastic ? "stochastic actions" : "mean actions"} · recorded ${M.created}`;
+resize();
+select(st.ck, 0);
+setView("face");
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

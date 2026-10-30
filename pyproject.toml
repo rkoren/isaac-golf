@@ -4,10 +4,22 @@ version = "0.1.0"
 description = "RL golf agents in Isaac Lab"
 requires-python = ">=3.12,<3.13"
 dependencies = [
-    "isaaclab[isaacsim,rsl-rl]==3.0.0",
+    "isaaclab[isaacsim,rsl-rl,video]==3.0.0",
     "torch==2.11.0",
     "torchvision==0.26.0",
 ]
+
+# isaac lab discovers external tasks through this entry point group, so the stock
+# `isaaclab train --task Isaac-Golf-Swing-Direct` finds our env with no custom launcher.
+[project.entry-points."isaaclab.tasks"]
+golf = "envs.golf"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["envs"]
 
 [tool.uv.sources]
 torch = { index = "pytorch-cu130" }
@@ -19,6 +31,9 @@ name = "nvidia"
 url = "https://pypi.nvidia.com/"
 
 [tool.uv]
+# urllib3 lives on several of our indexes at different versions; let uv pick the best across all
+# of them instead of only the first one that has the name. required for plain `uv sync` to resolve.
+index-strategy = "unsafe-best-match"
 # isaacsim-kernel 6.2 pins urllib3==2.7.0, isaaclab 3.0.0 wants >=2.8.0. unresolvable upstream.
 # 2.8.0 satisfies isaaclab's floor; kernel's exact pin is a build-env artifact, 2.7->2.8 is minor.
 override-dependencies = ["urllib3==2.8.0"]
