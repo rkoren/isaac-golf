@@ -1,0 +1,9 @@
+# Swing archive
+
+One row per archived run. Open `swings.html` in a browser.
+
+| date | stage | run | note | last checkpoint | files |
+|---|---|---|---|---|---|
+| 2026-10-29 | stage0 | 2026-10-24_22-47-19 | run 3: falls over and kicks the ball (old env: faced -Y, half-size head) | model_199: contact 2%, clubhead strikes 2%, body 73%, fell 100% | [model_0.mp4](2026-10-29_stage0_2026-10-24_22-47-19/model_0.mp4) [model_100.mp4](2026-10-29_stage0_2026-10-24_22-47-19/model_100.mp4) [model_199.mp4](2026-10-29_stage0_2026-10-24_22-47-19/model_199.mp4) [progression.mp4](2026-10-29_stage0_2026-10-24_22-47-19/progression.mp4) [swings.html](2026-10-29_stage0_2026-10-24_22-47-19/swings.html) |
+| 2026-10-29 | stage0 | 2026-10-29_23-27-19_fixes_120hz | fixed env: real address, first clubhead strikes (ball still goes backwards) | model_99: contact 78%, clubhead strikes 52%, body 2%, fell 89% | [model_0.mp4](2026-10-29_stage0_2026-10-29_23-27-19_fixes_120hz/model_0.mp4) [model_99.mp4](2026-10-29_stage0_2026-10-29_23-27-19_fixes_120hz/model_99.mp4) [progression.mp4](2026-10-29_stage0_2026-10-29_23-27-19_fixes_120hz/progression.mp4) [swings.html](2026-10-29_stage0_2026-10-29_23-27-19_fixes_120hz/swings.html) |
+| 2026-10-30 | stage0 | 2026-10-30_00-02-32_smash | analytic launch (smash factor), ball has no collider | model_299: contact 100%, clubhead strikes 100%, body 0%, smash 1.13, fell 70% | [model_0.mp4](2026-10-30_stage0_2026-10-30_00-02-32_smash/model_0.mp4) [model_100.mp4](2026-10-30_stage0_2026-10-30_00-02-32_smash/model_100.mp4) [model_200.mp4](2026-10-30_stage0_2026-10-30_00-02-32_smash/model_200.mp4) [model_299.mp4](2026-10-30_stage0_2026-10-30_00-02-32_smash/model_299.mp4) [progression.mp4](2026-10-30_stage0_2026-10-30_00-02-32_smash/progression.mp4) [swings.html](2026-10-30_stage0_2026-10-30_00-02-32_smash/swings.html) |

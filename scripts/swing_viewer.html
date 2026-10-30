@@ -142,7 +142,7 @@ const partName = b => PART_NAMES[b] || b.replace(/_/g, " ");
 const isClub = b => b === "clubhead" || b === "shaft";
 function strikeChip(e) {
   if (!e.struck) return '<span class="chip miss">untouched</span>';
-  if (!e.struck.armed) return '<span class="chip knock" title="ball moved before the backswing: club pushed into it at reset">reset knock</span>';
+  if (!e.struck.armed) return '<span class="chip knock" title="the club touched the ball before the backswing armed it: the tee hold puts it back and it pays nothing">early touch</span>';
   return `<span class="chip ${isClub(e.struck.by) ? "hit" : "body"}">${partName(e.struck.by)}</span>`;
 }
 
@@ -397,6 +397,8 @@ function drawHud(ep, t) {
     `<div class="row"><span class="k">ball</span><span>${S(ep, t, SC.ball).toFixed(2)} m/s</span></div>` +
     `<div class="row"><span class="k">club&rarr;ball</span><span>${S(ep, t, SC.dist).toFixed(3)} m</span></div>` +
     `<div class="row"><span class="k">torso height</span><span>${S(ep, t, SC.torso).toFixed(2)} m</span></div>` +
+    (ep.smash && ep.struck && t >= ep.struck.frame
+      ? `<div class="row"><span class="k">smash factor</span><span>${ep.smash.toFixed(2)}</span></div>` : "") +
     `<div class="chips">${armed ? '<span class="chip armed">ARMED</span>' : ""}${hit ? '<span class="chip hit">CONTACT</span>' : ""}` +
     `${ep.struck && t >= ep.struck.frame ? strikeChip(ep) : ""}</div>`;
 }
@@ -438,7 +440,7 @@ function drawChart() {
   if (armedAt >= 0) vline(armedAt, "#8b95a3", "armed", true, 0);
   if (ep.struck) {
     const c = !ep.struck.armed ? "#b7c0cc" : isClub(ep.struck.by) ? "#ff2fa8" : "#e5a13a";
-    vline(ep.struck.frame, c, ep.struck.armed ? `struck: ${partName(ep.struck.by)}` : "reset knock", true, 1);
+    vline(ep.struck.frame, c, ep.struck.armed ? `struck: ${partName(ep.struck.by)}` : "early touch", true, 1);
   }
   if (ep.hitFrame >= 0) vline(ep.hitFrame, "#ff2fa8", "contact (detector)", false, 2);
   vline(Math.min(st.t, ep.frames - 1), "#ffffff", null, false);
@@ -463,8 +465,9 @@ function renderSidebar() {
     ["Contact rate (detector)", pct(s.contact_rate)],
     ["Struck by clubhead", pct(s.clubhead_strike_rate)],
     ["Struck by body", pct(s.body_strike_rate)],
-    ["Knocked at reset", pct(s.reset_knock_rate)],
+    ["Touched before backswing", pct(s.pre_arm_touch_rate ?? s.reset_knock_rate)],
     ["Ball speed paid, mean", `${s.mean_paid_ball_speed.toFixed(2)} m/s`],
+    ...(s.mean_smash ? [["Smash factor, mean strike", s.mean_smash.toFixed(2)]] : []),
     ["Ball speed, mean max", `${s.mean_max_ball_speed.toFixed(2)} m/s`],
     ["Clubhead, mean max", `${s.mean_max_club_speed.toFixed(2)} m/s`],
     ["Fell over", pct(s.fell_rate)],
@@ -483,9 +486,10 @@ function renderSidebar() {
   $("eps").innerHTML = ck.episodes.map((e, i) =>
     `<div class="ep ${i === st.ep ? "on" : ""}" data-ep="${i}">` +
     `<span class="rk">#${e.rank}</span>` +
-    `<span><div class="nums">paid ${e.paid.toFixed(2)} m/s &middot; club ${e.maxClub.toFixed(1)} m/s</div>` +
+    `<span><div class="nums">paid ${e.paid.toFixed(2)} m/s` +
+    `${e.smash ? ` &middot; smash ${e.smash.toFixed(2)}` : ` &middot; closest ${e.minDist.toFixed(3)} m`}</div>` +
     `<div class="badges">${strikeChip(e)}${e.fell ? '<span class="chip fell">fell</span>' : ""}` +
-    `<span class="sub">closest ${e.minDist.toFixed(3)} m</span></div></span>` +
+    `<span class="sub">club ${e.maxClub.toFixed(1)} m/s</span></div></span>` +
     `</div>`).join("");
 }
 

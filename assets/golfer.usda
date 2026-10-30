@@ -10,9 +10,15 @@ def Xform "golfer" (
 )
 {
     def Xform "club" (
-        prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+        prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI", "PhysicsFilteredPairsAPI"]
     )
     {
+        rel physics:filteredPairs = [
+            </golfer/left_hand>,
+            </golfer/right_hand>,
+            </golfer/left_lower_arm>,
+            </golfer/right_lower_arm>,
+        ]
         float physics:mass = 0.31
 
         def Cube "head" (
@@ -20,7 +26,7 @@ def Xform "golfer" (
         )
         {
             double size = 1
-            float3 xformOp:scale = (0.02, 0.05, 0.025)
+            float3 xformOp:scale = (0.04, 0.1, 0.05)
             uniform token[] xformOpOrder = ["xformOp:scale"]
         }
 
@@ -43,7 +49,35 @@ def Xform "golfer" (
         point3f physics:localPos0 = (0, 0, 0)
         point3f physics:localPos1 = (0, 0, 0.85)
         quatf physics:localRot0 = (1, 0, 0, 0)
-        quatf physics:localRot1 = (0.00377, 0.79605, 0.25261, -0.54958)
+        quatf physics:localRot1 = (0.29709, 0.56742, 0.76116, -0.10201)
+    }
+
+    over "left_hand" (
+        prepend apiSchemas = ["PhysicsFilteredPairsAPI"]
+    )
+    {
+        rel physics:filteredPairs = [
+            </golfer/right_hand>,
+            </golfer/left_lower_arm>,
+            </golfer/right_lower_arm>,
+        ]
+    }
+
+    over "right_hand" (
+        prepend apiSchemas = ["PhysicsFilteredPairsAPI"]
+    )
+    {
+        rel physics:filteredPairs = [
+            </golfer/left_lower_arm>,
+            </golfer/right_lower_arm>,
+        ]
+    }
+
+    over "left_lower_arm" (
+        prepend apiSchemas = ["PhysicsFilteredPairsAPI"]
+    )
+    {
+        rel physics:filteredPairs = </golfer/right_lower_arm>
     }
 }
 

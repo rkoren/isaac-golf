@@ -116,3 +116,148 @@ Also found while watching:
 - Gating *when* a payout counts (after a backswing) is not gating *what* earns it. Ball speed after
   arming bought a kick. The payout has to know what struck the ball.
 - Reward and its own metric can agree and both mislead. Only watching the swings showed this.
+
+## Env fixes after the replay (2026-10-30)
+
+Four problems from the replay: wrong facing, reset knock, CCD off, clubhead half-size. All
+measured with new checks: `scripts/check_address.py` (now also reports limbs that start
+overlapping) and `scripts/check_impact.py` (drives the clubhead through the ball at set speeds).
+
+**Clubhead.** USD `Cube.size` is the edge length, so the old `HEAD_SIZE / 2` scale built a
+2 × 5 × 2.5 cm head. Now 4 × 10 × 5 cm. `impact_radius` 0.05 → 0.07 to cover it: a face-centre
+strike now happens with ball centre 4.1 cm from head centre, a toe strike out to ~7 cm.
+
+**Facing.** Root cause was not a missing heading term. `solve_address.py` built quaternions as
+(w, x, y, z) and Isaac Lab 3.0 reads (x, y, z, w): rotation vector 0 meant upside down, and
+upright-facing-+X lay outside the search box entirely, so the best it could do was sideways. The
+old comment blaming "a torso link frame rotated 90° from the prim frame" was a misdiagnosis.
+Fixed the order and added a heading cost (3D shoulder and hip lines along +Y; scoring only their
+horizontal part let the solver roll the torso 60° and still pass) and a no-overlap cost.
+
+| solve | final cost | torso − pelvis | notes |
+|---|---|---|---|
+| heading, flat, wrong quats | 0.246 | 0.18 m | shoulders tilted 60° |
+| heading, 3D, wrong quats | 0.93–1.26 | 0.13–0.15 m | folded, rolled to the trail side |
+| quats fixed | 0.017 | 0.33 m | real address, 11 limb overlaps |
+| + overlap cost | **0.001** | 0.34 m | 0 overlaps, joints mid-range |
+
+**Reset knock.** Root cause was not the joint jitter. The address had **11 limb overlaps** PhysX
+resolves on the first step at up to the 10 m/s depenetration cap: trail hand inside lead hand
+(5.8 cm) and inside the shaft (3.4 cm), forearms crossed (4.9 cm), arms inside the waist (4.9 cm).
+That flung the club into the ball. Fixes: the grip cluster (club, both hands, both forearms)
+never self-collides (`FilteredPairsAPI`); the solver penalises overlaps (→ 0); address leaves
+2 cm of air at the face; and the ball is held on the tee until the swing arms, with unarmed ball
+speed counted as zero.
+
+**CCD.** Sweep CCD is CPU-only, so PhysX GPU drops `enable_ccd` (removed). Centre strikes, face
+first, % that PhysX registers (ball leaves at > ⅓ club speed):
+
+| config | ≤5 m/s | 10–15 | 15–20 | 25–30 | 35–40 | near miss, 2 / 5 cm clear |
+|---|---|---|---|---|---|---|
+| 120 Hz (current) | 100% | 38% | 22% | 0% | 0% | — |
+| 120 Hz + speculative CCD on club | identical to the row above (no effect on GPU articulation links) | | | | | |
+| 120 Hz + ball contact offset 0.2 m | 100% | 100% | 100% | 100% | 100% | **ghost hits 94–100% / 68–100%** |
+| 240 Hz | 100% | 84% | 66% | 26% | 0% | — |
+| 480 Hz | 100% | 100% | 100% | 78% | 70% | 0% / — (honest) |
+
+Discrete collision fails once the head moves ~4 cm per substep, about *half* the 8.3 cm overlap
+window: past the ball's centre, the minimum-translation push sends the ball out the back. A big
+contact offset trades misses for invented strikes, which a policy would farm. The **detector**
+is fixed regardless: contact is now the clubhead's swept path (closest approach during the step),
+100% at every speed and 0% on near misses, where the old end-of-step sample skipped over the ball.
+Physics stays at 120 Hz for now; see the open decision below.
+
+Also fixed: `post_impact` counted double on any step with a reset (the counters ran in a function
+`_reset_idx` also calls). `Metrics/min_club_ball_dist` is now the swept closest approach, so it
+reads lower than earlier runs for the same motion.
+
+Also found, not changed: the implicit actuators pull every joint toward **joint zero** (the stock
+standing pose) with 10–20 N·m/rad, not toward the address. With zero action and gravity off the
+clubhead leaves address at 2–7 m/s on the first step. The policy has been fighting this spring.
+
+**Takeaways**
+- A quaternion-order mix-up doesn't crash. It quietly made the right answer unreachable, and the
+  workaround (a "rotated frame" theory) went into a comment as fact.
+- Overlaps at reset are invisible until something gets flung. Check for them after every pose change.
+- Measure the failure mode you're trading into: speculative CCD did nothing, and contact offset
+  fixed tunneling by inventing strikes.
+
+### Validation run on the fixed env (2026-10-30)
+
+`logs/rsl_rl/golf_swing/2026-10-29_23-27-19_fixes_120hz`: same Stage 0 reward, 1024 envs, 100 iters,
+PhysX 120 Hz. **1.19 s/iter** (run 3: 1.11; the tee hold and swept test cost ~4%). Throughput
+probe at 480 Hz (decimation 8): **2.94 s/iter**, 2.5× slower.
+
+| | reward first → last 10 | contact (detector) | struck by clubhead | struck by body | touched before backswing | paid ball speed | fell |
+|---|---|---|---|---|---|---|---|
+| run 3, model_199 (old env) | +0.06 → +6.05 | 2% | 1/64 | 47/64 | 8/64 knocked off | 3.90 m/s | 100% |
+| **fixed, model_99** | +1.3 → +4.9 | **78%** | **33/64** | 1/64 | 2/64 (held, harmless) | 2.47 m/s | 89% |
+
+The kicking all but vanished **without touching the reward**: with the ball in front of the face
+instead of beside the lead leg, and no reset fling, the club became the easiest thing to hit it
+with. Paid ball speed is lower than run 3's because these are real strikes, and at 120 Hz PhysX
+registers only some of them at these 10–15 m/s head speeds. Strikes currently send the ball
+toward **−Y**, away from the target: arming accepts 25 cm in any direction, so the policy winds up
+toward the target and swings back through. Stage 0 doesn't pay direction; Stage 3 will.
+
+Open decisions: physics rate vs analytic impact (above), whether to still gate the payout on the
+clubhead (the kick is gone for now, but nothing stops it coming back), and the joint-zero PD targets.
+
+## Analytic launch: smash factor (2026-10-30)
+
+Decided: the ball gets **no collider**, and the env computes the launch the way launch monitors
+and golf sims report it. That settles both open questions above: PhysX can't tunnel through or
+invent a strike it never sees, and nothing but the clubhead can move the ball, so kicking is
+impossible by construction. Throughput: unchanged from 120 Hz.
+
+A strike is the clubhead's swept path passing the ball (after arming), with the ball inside the
+head's box grown by its radius and the head moving into it. Then:
+
+- ball speed = **smash** × head speed into the striking side, where
+  smash = 1.0 + 0.47 · exp(−(toe/2.2 cm)² − (high/1.1 cm)²): 1.47 dead centre (a driver's max),
+  ~1.2 for a 2 cm toe miss, ~1.0 topped. Up-down falls off twice as fast: the face is half as tall.
+- the striking side is whichever leads through the ball; the back of the head gets the 1.0 floor.
+- start direction = 85% face normal + 15% club path (the launch-monitor rule for a driver).
+- spin and launch angle (loft) are Phase 2.
+
+`scripts/check_impact.py` (rigid golfer, set speeds), ball/club = effective smash:
+
+| strike | registered | smash measured | model |
+|---|---|---|---|
+| centre | 100% at 5–50 m/s | 1.45–1.47 | 1.47 |
+| 1 cm toe | 100% | 1.37 | 1.38 |
+| 2 cm toe | 100% | 1.20 | 1.20 |
+| 9 cm wide of the head | 0% | — | miss |
+
+### Run 4: Stage 0 with the analytic launch (2026-10-30)
+
+`logs/rsl_rl/golf_swing/2026-10-30_00-02-32_smash`: Stage 0 reward unchanged, 1024 envs, 300 iters,
+PhysX 120 Hz, **1.09 s/iter**. Training: reward −0.4 → **+50**, `contact_rate` 0.02 → **0.99**,
+`Metrics/ball_speed` 0.02 → 12.2 m/s, `Metrics/impact_speed` → 16.8 m/s.
+
+| checkpoint (64 rollouts, mean actions) | contact | clubhead strikes | smash | paid ball speed | clubhead | fell |
+|---|---|---|---|---|---|---|
+| model_0 | 0% | 0% | — | 0 | 8.3 m/s | 100% |
+| model_100 | 45% | 45% | 1.00 | 1.2 m/s | 5.8 m/s | 100% |
+| model_200 | 100% | 89% | 1.09 | 16.4 m/s | 17.2 m/s | 100% |
+| model_299 | **100%** | **100%** | 1.13 | **19.8 m/s** | 19.5 m/s | 70% |
+
+**The ball goes toward the target now, with no direction reward.** At model_299 every strike leaves
+2–10° left of the target line (run "fixes_120hz" sent it backwards). The smash model did it: the
+face pays 1.47× head speed and the back only 1.0×, so swinging face-first through the ball pays
+47% more, and face-first means down the target line. Early strikes were all back-of-head (smash
+exactly 1.00 at model_100); by model_299 the best hit 1.46. Launch elevation is ~0°: the face has
+no loft yet. Mean smash 1.13 says most strikes are still off-centre.
+
+First milestone met: a headless run where contact rate climbs. It still lunges and sits down after
+the strike (70% fell), which Stage 0 allows.
+
+**Takeaways**
+- A launch model with the right physics is also a reward shaper: the smash floor on the back of the
+  head bought direction for free.
+- When the physics engine can't resolve an event at the timescale you need, compute the event
+  and let the engine do the rest. One analytic step replaced CCD, a 4–8× finer step, and a reward gate.
+
+Swings are archived per stage from here on: `scripts/archive_run.py` → `media/` (Kit clip per
+checkpoint, side-by-side progression, swing viewer; index in `media/index.md`). Run 3 and the
+fixed-env validation run are archived as the first two Stage 0 entries.

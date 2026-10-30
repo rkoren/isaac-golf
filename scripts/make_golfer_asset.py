@@ -16,7 +16,7 @@ HEAD_SIZE = (0.04, 0.10, 0.05)
 CLUB_MASS = 0.31
 GRIP_Z = 0.85 # where hand grabs
 # club orientation in hand
-WELD_ROT = (0.00377, 0.79605, 0.25261, -0.54958) # (w,x,y,z)
+WELD_ROT = (0.29709, 0.56742, 0.76116, -0.10201) # (w,x,y,z), usd order
 
 REPO = Path(__file__).resolve().parents[1]
 UPSTREAM = "{ISAAC}/Robots/IsaacSim/Humanoid/humanoid.usd"
@@ -45,7 +45,9 @@ def build_golfer(humanoid_rel: str, out: Path) -> None:
 
     head = UsdGeom.Cube.Define(stage, "/golfer/club/head")
     head.CreateSizeAttr(1.0)
-    head.AddScaleOp().Set(Gf.Vec3f(*[s / 2.0 for s in HEAD_SIZE]))  # size=1 cube spans -1..1
+    # size is the edge length: a size=1 cube spans -0.5..0.5, so scale by the full extents
+    # (was HEAD_SIZE / 2, which built a head half as big on every axis)
+    head.AddScaleOp().Set(Gf.Vec3f(*HEAD_SIZE))
     UsdPhysics.CollisionAPI.Apply(head.GetPrim())
 
     shaft = UsdGeom.Capsule.Define(stage, "/golfer/club/shaft")
@@ -62,6 +64,14 @@ def build_golfer(humanoid_rel: str, out: Path) -> None:
     weld.CreateLocalPos1Attr(Gf.Vec3f(0, 0, GRIP_Z))
     weld.CreateLocalRot0Attr(Gf.Quatf(1, 0, 0, 0))
     weld.CreateLocalRot1Attr(Gf.Quatf(*WELD_ROT))
+
+    # the grip cluster never collides with itself
+    grip = ["club", "left_hand", "right_hand", "left_lower_arm", "right_lower_arm"]
+    for i, body in enumerate(grip[:-1]):
+        prim = club if body == "club" else stage.OverridePrim(f"/golfer/{body}")
+        UsdPhysics.FilteredPairsAPI.Apply(prim).CreateFilteredPairsRel().SetTargets(
+            [Sdf.Path(f"/golfer/{other}") for other in grip[i + 1:]]
+        )
 
     stage.GetRootLayer().Save()
 

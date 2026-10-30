@@ -22,11 +22,9 @@ from .golfer import GOLFER_CFG
 BALL_R = 0.02134
 BALL_MASS = 0.0459
 
-BALL_POS = (0.819, 0.001, 0.089)
-TEE_H = 0.089 - BALL_R   # tee
+BALL_POS = (0.819, 0.061, 0.089) # 2 cm from clubface
+TEE_H = BALL_POS[2] - BALL_R   # tee
 
-# visuals only, no effect on physics. tint multiplies the stock checker texture, so the squares
-# read as two-tone mowing stripes. magenta ball: opposite green, and the golfer is already orange.
 GRASS = (0.30, 0.62, 0.22)
 BALL_COLOR = (1.0, 0.1, 0.65)
 BALL_GLOW = (1.6, 0.1, 1.0)
@@ -34,11 +32,14 @@ BALL_GLOW = (1.6, 0.1, 1.0)
 
 @configclass
 class GolfPhysicsCfg(PresetCfg):
-    """Backend presets. ccd + extra solver iters because the clubhead moves ~0.4 m per step."""
+    """Backend presets. Extra solver iters for the club-ball contact.
+
+    No enable_ccd: that is sweep ccd, which physx gpu drops with a warning. The club carries
+    speculative ccd in its asset instead (make_golfer_asset.py); scripts/check_impact.py measures it.
+    """
 
     isaacsim_physx: PhysxCfg = PhysxCfg(
         bounce_threshold_velocity=0.2,
-        enable_ccd=True,
         min_position_iteration_count=8,
     )
     newton_mjwarp: NewtonCfg = NewtonCfg(
@@ -64,7 +65,8 @@ class GolfSceneCfg(InteractiveSceneCfg):
             radius=BALL_R,
             rigid_props=sim_utils.RigidBodyPropertiesCfg(disable_gravity=True),
             mass_props=sim_utils.MassPropertiesCfg(mass=BALL_MASS),
-            collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=True),
+            # no collider: the env detects strikes and computes the launch (smash factor)
+            collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=False),
             visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=BALL_COLOR, emissive_color=BALL_GLOW),
         ),
         init_state=RigidObjectCfg.InitialStateCfg(pos=BALL_POS),
@@ -129,10 +131,18 @@ class GolfEnvCfg(DirectRLEnvCfg):
     joint_pos_limits_threshold: float = 0.98
 
     # impact
-    impact_radius: float = 0.05
-    impact_min_speed: float = 1.0       # [m/s]
+    impact_radius: float = 0.07       # ball r + half the clubhead's 10 cm toe-heel length
+    impact_min_speed: float = 1.0       # [m/s] head speed into the ball
     impact_arm_dist: float = 0.25       # [m] how close to count as hit
     post_impact_steps: int = 30         # end episode this long after first contact
+
+    # launch = smash factor x head speed into the face (launch monitors / sims). smash falls off
+    # with distance from the sweet spot: ~1.2 at 2 cm toe, ~1.0 topped (2 cm high) or skulled
+    smash_max: float = 1.47             # driver, dead centre
+    smash_min: float = 1.0              # the floor: topped, skulled, or the back of the head
+    smash_sigma_toe: float = 0.022      # [m] toe-heel falloff
+    smash_sigma_high: float = 0.011     # [m] up-down falloff: the face is half as tall
+    face_launch_weight: float = 0.85    # start direction: 85% face normal, 15% club path
 
     # obs scales
     dof_vel_scale: float = 0.1

@@ -33,7 +33,7 @@ ap.add_argument("--stochastic", action="store_true", help="sample actions like t
 ap.add_argument("--seed", type=int, default=42)
 ap.add_argument("--out", default=None, help="output .html (default: <run>/swings/swings_<iters>.html)")
 add_launcher_args(ap)
-# hydra overrides (physics=...) look positional to argparse, so split them off by hand
+
 hydra = [a for a in sys.argv[1:] if "=" in a and not a.startswith("-")]
 args = ap.parse_args([a for a in sys.argv[1:] if a not in hydra])
 sys.argv = [sys.argv[0]] + hydra
@@ -54,6 +54,7 @@ import gymnasium as gym
 
 import envs.golf
 from envs.golf.golfer import CLUB_BODY, GOLFER_USD
+from envs.golf.shapes import body_shapes
 from isaaclab.utils.math import quat_apply
 from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper, check_rsl_rl_version, create_rsl_rl_runner
 from isaaclab_rl.rsl_rl import handle_deprecated_rsl_rl_cfg
@@ -63,48 +64,6 @@ env_cfg, agent_cfg = resolve_task_config(args.task, "rsl_rl_cfg_entry_point")
 env_cfg.scene.num_envs = args.num_envs
 env_cfg.seed = args.seed
 args.device = env_cfg.sim.device
-
-
-def body_shapes(usd_path: str) -> dict[str, list[tuple]]:
-    """Collision shapes per body, as points in that body's frame. Read from the asset, so a
-    resized club or swapped humanoid shows up in the viewer without touching it."""
-    from pxr import Gf, Usd, UsdGeom, UsdPhysics
-
-    stage = Usd.Stage.Open(usd_path)
-    shapes: dict[str, list[tuple]] = {}
-    seen = set()
-    for prim in stage.Traverse():
-        if not prim.HasAPI(UsdPhysics.CollisionAPI):
-            continue
-        body = prim.GetParent()
-        while body and not body.HasAPI(UsdPhysics.RigidBodyAPI):
-            body = body.GetParent()
-        if not body:
-            continue
-        # geom -> body. usd matrices are row-vector, hence geom * inverse(body)
-        m = UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(0) * (
-            UsdGeom.Xformable(body).ComputeLocalToWorldTransform(0).GetInverse()
-        )
-        p = lambda *v: tuple(round(c, 5) for c in m.Transform(Gf.Vec3d(*v)))
-        kind = prim.GetTypeName()
-        if kind == "Capsule":
-            g = UsdGeom.Capsule(prim)
-            h, r = g.GetHeightAttr().Get() / 2, g.GetRadiusAttr().Get()
-            axis = [0.0, 0.0, 0.0]
-            axis["XYZ".index(g.GetAxisAttr().Get())] = h
-            shape = ("cap", p(*axis), p(*(-a for a in axis)), round(r, 4))
-        elif kind == "Sphere":
-            shape = ("sph", p(0, 0, 0), round(UsdGeom.Sphere(prim).GetRadiusAttr().Get(), 4))
-        elif kind == "Cube":
-            s = UsdGeom.Cube(prim).GetSizeAttr().Get() / 2
-            shape = ("box", p(0, 0, 0), p(s, 0, 0), p(0, s, 0), p(0, 0, s))
-        else:
-            continue
-        key = (body.GetName(), shape)
-        if key not in seen:  # vendored asset authors some shapes twice
-            seen.add(key)
-            shapes.setdefault(body.GetName(), []).append(shape)
-    return shapes
 
 
 def part(body: str) -> str:
@@ -191,6 +150,7 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
         sc = torch.zeros(N, T, 7, device=u.device)
         length = torch.zeros(N, dtype=torch.long, device=u.device)
         alive = torch.ones(N, dtype=torch.bool, device=u.device)
+        smash = torch.zeros(N, device=u.device)  # the env's smash factor at the strike, 0 if none
 
         # reset inside inference mode too: stepping in it turns env buffers into inference
         # tensors, and the next checkpoint's reset would then fail writing to them
@@ -219,6 +179,8 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
                     dim=-1,
                 )
                 pts[alive, t] = frame[alive]
+                if hasattr(u, "smash"):
+                    smash = torch.where(alive, torch.maximum(smash, u.smash), smash)
                 sc[alive, t, :6] = row[alive]
                 length += alive.long()
                 if t == T - 1:
@@ -261,7 +223,8 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
             ball = pts_np[i, t0, K]
             near = min(prims, key=lambda pr: min(surface_dist(ball, pts_np[i, f], pr) for f in (t0, t1)))
             struck.append({"by": striker(near), "frame": t1, "armed": bool(sc_np[i, t1, 4] > 0.5)})
-        knocked = [s is not None and not s["armed"] for s in struck]
+        # the env holds the ball on the tee until armed, so this is the club touching it early
+        early = [s is not None and not s["armed"] for s in struck]
         swung = [s["by"] for s in struck if s is not None and s["armed"]]
 
         # best first by what the reward pays; closest approach breaks ties among misses
@@ -272,11 +235,12 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
         summary = {
             "contact_rate": hit.float().mean().item(),
             "moved_rate": moved.any(1).float().mean().item(),
-            "reset_knock_rate": sum(knocked) / N,
+            "pre_arm_touch_rate": sum(early) / N,
             "clubhead_strike_rate": swung.count("clubhead") / N,
             "body_strike_rate": sum(b not in ("clubhead", "shaft") for b in swung) / N,
             "struck_by": {b: swung.count(b) for b in sorted(set(swung), key=swung.count, reverse=True)},
             "mean_paid_ball_speed": paid.mean().item(),
+            "mean_smash": smash[smash > 0].mean().item() if (smash > 0).any() else 0.0,
             "fell_rate": fell.float().mean().item(),
             "mean_max_ball_speed": max_ball.mean().item(),
             "best_ball_speed": max_ball.max().item(),
@@ -292,8 +256,9 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
             f"return {summary['mean_return']:.1f}  action std {summary['action_std']:.2f}"
         )
         print(
-            f"    paid ball speed {summary['mean_paid_ball_speed']:.2f} m/s  knocked at reset "
-            f"{summary['reset_knock_rate']:.0%}  struck after backswing by: {summary['struck_by'] or 'nothing'}"
+            f"    paid ball speed {summary['mean_paid_ball_speed']:.2f} m/s  smash {summary['mean_smash']:.2f}  "
+            f"touched before backswing "
+            f"{summary['pre_arm_touch_rate']:.0%}  struck after backswing by: {summary['struck_by'] or 'nothing'}"
         )
 
         episodes = []
@@ -306,6 +271,7 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
                     "hitFrame": hit_frame[i].item(), "maxBall": max_ball[i].item(),
                     "maxClub": max_club[i].item(), "minDist": min_dist[i].item(),
                     "fell": bool(fell[i]), "ret": ret[i].item(), "paid": paid[i].item(), "struck": struck[i],
+                    "smash": smash[i].item(),
                     "pts": pack(mm), "sc": pack(sc[i, :L].float()),
                 }
             )

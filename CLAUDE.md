@@ -22,7 +22,8 @@ Side project: teach a stick-figure agent to swing golf clubs and play a designed
 Stick figure + club welded to hands + ball on tee, flat ground. Goal: hit far and straight.
 
 **Phase 2 — Analytic ball flight**
-Do NOT simulate ball flight in PhysX (no Magnus effect; sub-ms club impact is numerically unreliable). At impact, read clubhead state → feed an analytic flight model (launch speed/angle, spin, drag + Magnus lift — standard golf-physics equations) → landing position. Clubs = different welded geometries + loft angles; policy conditions on club ID.
+Do NOT simulate ball flight in PhysX (no Magnus effect; sub-ms club impact is numerically unreliable). At impact, read clubhead state → feed an analytic flight model (launch speed/angle, spin, drag + Magnus lift — standard golf-physics equations) → landing position.
+The **launch itself is already analytic** (Phase 1 env): ball speed = **smash factor** × clubhead speed into the face, the way launch monitors and sims report it. Smash is 1.47 for a centred driver strike and falls off with distance from the sweet spot (~1.2 for a 2 cm toe miss, ~1.0 topped or skulled); start direction is 85% face normal, 15% club path. Spin and launch angle (loft) come with this phase. Clubs = different welded geometries + loft angles; policy conditions on club ID.
 
 **Phase 3 — Play a course (hierarchical)**
 Designed course as USD terrain/heightmap. High-level layer (heuristic or simple policy) picks club + aim + power target per shot; low-level swing policy executes. Never attempt tee-to-hole end-to-end with one policy.
@@ -44,11 +45,13 @@ Designed course as USD terrain/heightmap. High-level layer (heuristic or simple 
 - Phase/time-in-episode scalar
 
 **Actions:** joint torques or position targets (Isaac Lab humanoid examples use torque control — keep their choice); action dim = DoF of the articulation.
+Measured 2026-10-30: the implicit actuators also carry PD stiffness (10–20 N·m/rad on arms and waist) toward position targets of **joint zero** — the stock standing pose, not the address. With zero action the golfer springs out of address on the first step (clubhead 2–7 m/s, gravity off). Every torque the policy outputs fights that spring. Open question, not yet changed.
 
 **Ball + tee:** the ball is a real-spec sphere (r=21.34 mm, 45.9 g) with **gravity disabled**, and the tee is a **visual-only** prim with no collider. Phase 2 owns flight analytically, so PhysX only has to report the impact — a gravity-free ball needs no support, which also means the club can never strike the tee (a static tee would deflect the clubhead like a steel post). Stage 4.5 turns gravity back on and rests the ball on the ground.
+**The ball has no collider.** PhysX never touches it: a strike is the clubhead's swept path passing it (after arming, inside the head's box) and the env writes the launch velocity from the smash-factor model. So nothing but the clubhead can move it — no kicks, no tunneling, no ghost hits. Address leaves 2 cm of air between clubface and ball.
 
 **Target line:** the golfer faces **+X** with the ball in front of its chest, and a right-hander sends the ball to its **left, so the target direction is +Y** — not +X. The swing plane is perpendicular to the stance, which is easy to get backwards.
-**Measured 2026-10-29: the solved address pose does not match this.** It faces **−Y** (head leans −Y of the pelvis, shoulder and hip lines run along X, feet point along Y) with the ball off its *left* side. `solve_address.py` constrains only hand position, foot height and torso/pelvis heights, so heading was left free. Re-solve with a heading term before any direction reward means anything.
+`solve_address.py` enforces this with a heading cost (shoulder and hip lines along +Y) and a no-overlap cost. The first solve faced −Y: it built (w,x,y,z) quaternions for a sim that reads (x,y,z,w), which put upright-facing-+X outside its search space (see Known traps). After any address change, `scripts/check_address.py` must report **zero overlapping limbs**.
 
 **Episode:** reset with agent addressing a teed ball; terminate on timeout (~5 s) or N steps post-impact. **No fall termination in Stage 0** (see curriculum); add it only once standing is being rewarded.
 
@@ -59,7 +62,7 @@ Designed course as USD terrain/heightmap. High-level layer (heuristic or simple 
 1. **Stage 0 — swing at all:** reward **ball speed gained** (the real objective; the ball is gravity-free and starts at rest, so any speed is a genuine strike) + a **capped backswing** term for winding up + clubhead speed near the ball. **No alive bonus, no fall penalty, no fall termination** — swinging is the first goal, and if the golfer flings itself over to do it, fine.
    **Do NOT use a clubhead-to-ball distance ("approach") reward here.** The club starts at address ~6 cm from the ball, so distance reduction is optimised by standing perfectly still, and it penalises the backswing — the one thing a swing must do first. Measured: reward fell −1.2 → −7.0 and clubhead speed fell 5.9 → 3.7 m/s as the policy learned to freeze. A distance term only makes sense if the club starts away from the ball.
    Contact detection needs **arming**: the clubhead must travel >0.25 m from the ball before a hit counts, or `contact_rate` reads 1.0 from iteration 0 and measures nothing.
-   **"Any speed is a genuine strike" is false (measured 2026-10-29).** At iter 199, 45 of 52 armed strikes were the left shin/foot — the policy kicks the ball — and 1 in 4–8 resets has the clubhead knocking the ball off the tee. The payout has to check *what* hit the ball, not only when. Details in `docs/experiments.md`.
+   **"Any speed is a genuine strike" is false (measured 2026-10-29).** At iter 199, 45 of 52 armed strikes were the left shin/foot — the policy kicks the ball. Fixed by construction: the ball has no collider and only the clubhead's analytic launch moves it. The club knocking it off the tee at reset is gone too (overlap-free address). Details in `docs/experiments.md`.
 2. **Stage 1 — contact:** big sparse bonus for club-ball contact; keep stage 0 shaping at reduced weight.
 3. **Stage 2 — ball speed:** reward ball speed at/after impact. Expect violent, ugly swings — fine.
 4. **Stage 3 — direction:** reward ball-velocity alignment with target direction; penalize the offline component.
@@ -77,6 +80,7 @@ Standard shaping terms kept throughout: action-rate penalty (smoothness), small 
 - `.gitignore`: `runs/`, checkpoints (`*.pt`, `*.onnx`), TensorBoard events, `__pycache__/`, large USD/binary assets, Omniverse cache dirs.
 - The flight model is ordinary physics code: write it test-first (known inputs → known carry distances from published golf data) before wiring it to Isaac.
 - Commit small, push each session. Experiments without a logged config/result didn't happen.
+- **Archive every stage's swings:** `uv run python scripts/archive_run.py <run dir> --stage stageN --note "..."` films each checkpoint in Kit, stacks them into `progression.mp4`, saves the swing viewer, and adds a row to `media/index.md`. `media/` is tracked (logs/ isn't); clips are ~300 KB, a viewer 2–4 MB. Use `--existing` for runs whose env has since changed.
 - **Watch the policy before trusting a reward curve.** `scripts/record_swings.py <run dir> physics=isaacsim_physx` rolls out every checkpoint headless and writes one self-contained HTML viewer to `<run>/swings/` (scrub, slow-mo, camera presets, which body part struck the ball). For a Kit render: `isaaclab play --rl_library rsl_rl --task Isaac-Golf-Swing-Direct --num_envs 1 --checkpoint <path/to/model_N.pt> --video --video_length 300 physics=isaacsim_physx` — needs the `video` extra (in `pyproject.toml`); 3.0's `play` has no `--load_run`.
 
 ## Known traps (pre-answered — no session relitigates them)
@@ -85,18 +89,20 @@ Standard shaping terms kept throughout: action-rate penalty (smoothness), small 
 - **Don't learn grasping** — weld the club.
 - **Don't train with the GUI open** — headless, or it will crawl and eat RAM.
 - **Don't end-to-end the whole golf round** — hierarchy per Phase 3.
-- **Don't trust raw contact impulses at impact** — small dt/substeps, or sample clubhead velocity at proximity.
+- **Don't trust raw contact impulses at impact** — small dt/substeps, or sample clubhead velocity at proximity. Measured (`scripts/check_impact.py`): at 120 Hz PhysX misses most strikes above ~5 m/s and all at 25–40 m/s; sweep CCD is CPU-only, speculative CCD does nothing on GPU articulation links, and a big ball contact offset invents strikes on near misses. So the ball doesn't collide at all: contact is the clubhead's swept path (reliable at any speed) and the launch is computed (smash factor, Phase 2 above).
 - **Don't start with a sparse ball-in-hole reward** — curriculum above.
 - **Club welds to `left_hand` only** (lead hand for a right-handed swing). The humanoid *does* have `left_hand`/`right_hand` bodies — 4 cm spheres on fixed joints, zero DoF, ideal anchors. Welding **both** hands closes a kinematic loop (torso → left arm → club → right arm → torso) which PhysX must solve as an extra constraint at only 4 position iterations: sag, jitter, blowup. The trail (right) hand is kept on the grip by a **reward penalty**, not a constraint — tree stays intact and the policy learns to hold on. A soft physical D6 spring is a later logged experiment, not the default.
+The **grip cluster never self-collides** (club, both hands, both forearms: `FilteredPairsAPI` in `make_golfer_asset.py`). Fat capsules converging on one grip always overlap, and with no wrists the shaft crosses the lead forearm permanently. PhysX only skips jointed pairs, so before the filter it flung those bodies apart at every reset.
 - **Don't fork blind:** env logic lives in `locomotion_direct_env.py`, not the humanoid files.
 - **Don't copy Isaac Lab 2.x tutorials verbatim** — 3.0 moved asset data behind `.torch` accessors, dropped `--headless`, and dropped the `-v0` task suffix.
+- **Isaac Lab 3.0 quaternions are (x, y, z, w)** — root poses, `InitialStateCfg.rot`, body quats, `isaaclab.utils.math`. USD (`Gf.Quatf`, joint `localRot`) is still (w, x, y, z). Mixing them up doesn't crash; it silently rotates things. That is how the first address solve came out facing the wrong way.
 - **Version drift:** Isaac Lab ↔ Isaac Sim ↔ driver versions get pinned once working; upgrades are deliberate, between phases, never mid-training.
 
 ## Milestones
 
 - [x] **Phase 0:** Isaac Lab 3.0 + Isaac Sim 6.2 installed; stock humanoid trains headless at 4096 envs, ~160k env-steps/s on PhysX, 4.9 GB VRAM (`docs/experiments.md`)
 - [x] Fork humanoid env → golf env skeleton: teed ball + welded club + reset/termination (`envs/golf/`, `assets/golfer.usda`; address pose + weld solved by `scripts/solve_address.py`)
-- [ ] Stage 0–1 training: agent reliably contacts the ball
+- [x] Stage 0–1 training: agent reliably contacts the ball (Stage 0 alone, run 4: contact 0.02 → 0.99 in 300 iters, 64/64 clubhead strikes; `media/`)
 - [ ] Stage 2–3: fast, directed ball at impact
 - [ ] Phase 2 flight model (unit-tested) wired to impact state; carry distances plausible per club
 - [ ] Stage 4: power/direction-conditioned swing policy

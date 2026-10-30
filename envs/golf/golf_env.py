@@ -8,11 +8,12 @@ import torch
 
 from isaaclab.envs import DirectRLEnv
 from isaaclab.utils import index_fill_
-from isaaclab.utils.math import normalize, sample_uniform, scale_transform
+from isaaclab.utils.math import normalize, quat_apply, quat_apply_inverse, sample_uniform, scale_transform
 from isaaclab.utils.string import resolve_matching_names_values
 
 from .golf_env_cfg import GolfEnvCfg
-from .golfer import CLUB_BODY, LEAD_HAND, TRAIL_HAND
+from .golfer import CLUB_BODY, GOLFER_USD, LEAD_HAND, TRAIL_HAND
+from .shapes import body_shapes
 
 
 class GolfEnv(DirectRLEnv):
@@ -45,8 +46,25 @@ class GolfEnv(DirectRLEnv):
         self.armed = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self.backswing = torch.zeros(self.num_envs, device=self.device)
         self.max_ball_speed = torch.zeros(self.num_envs, device=self.device)
+        self.launch_speed = torch.zeros(self.num_envs, device=self.device)
+        self.smash = torch.zeros(self.num_envs, device=self.device)
+
+        box = next(s for s in body_shapes(GOLFER_USD)[CLUB_BODY] if s[0] == "box")
+        self.head_half = torch.tensor(
+            [abs(box[2 + i][i] - box[1][i]) for i in range(3)], dtype=torch.float32, device=self.device
+        )
+        self.ball_r = self.scene["ball"].cfg.spawn.radius
+        # where the ball rests on the tee, per env. quat is (x, y, z, w) in isaac lab 3.0
+        self.tee_pose = torch.zeros(self.num_envs, 7, device=self.device)
+        self.tee_pose[:, :3] = torch.tensor(self.cfg.ball_pos, device=self.device) + self.scene.env_origins
+        self.tee_pose[:, 6] = 1.0
+        self.ball_rest = torch.zeros(self.num_envs, 6, device=self.device)
 
         self._compute_intermediate_values()
+        # start-of-step state for the swept contact test
+        self.prev_club_pos = self.club_pos.clone()
+        self.prev_club_quat = self.club_quat.clone()
+        self.prev_ball_pos = self.ball_pos.clone()
         width = self._get_observations()["policy"].shape[-1]
         assert width == self.cfg.observation_space, (
             f"observation_space={self.cfg.observation_space} but obs is {width} wide"
@@ -74,6 +92,7 @@ class GolfEnv(DirectRLEnv):
         # club the com velocity badly understates head speed.
         self.club_pos = self.robot.data.body_link_pos_w.torch[:, self._club_idx]
         self.club_vel = self.robot.data.body_link_lin_vel_w.torch[:, self._club_idx]
+        self.club_quat = self.robot.data.body_link_quat_w.torch[:, self._club_idx]
         self.lead_pos = self.robot.data.body_link_pos_w.torch[:, self._lead_idx]
         self.trail_pos = self.robot.data.body_link_pos_w.torch[:, self._trail_idx]
 
@@ -83,21 +102,78 @@ class GolfEnv(DirectRLEnv):
         self.club_ball_dist = torch.linalg.norm(self.ball_pos - self.club_pos, dim=-1)
         self.club_speed = torch.linalg.norm(self.club_vel, dim=-1)
 
-        # impact by proximity, NOT by contact impulse: at dt=1/120 a fast clubhead crosses
-        # ~0.4 m per step, so the impulse the solver reports is not trustworthy
-        # arm on the backswing: without this, contact_rate is 1.0 from iteration 0 because
-        # the head starts inside the impact radius
-        self.armed |= self.club_ball_dist > self.cfg.impact_arm_dist
+    def _update_contact(self):
+        """Arming, strike and launch, post-impact count. Exactly once per env step, after physics.
+
+        Kept out of _compute_intermediate_values: _reset_idx calls that too, so on any step
+        with a reset these counters used to run twice (post_impact counted double).
+
+        The ball has no collider. PhysX misses most strikes above ~5 m/s at 120 Hz and invents
+        them with a big contact offset (docs/experiments.md), so a strike is detected here and
+        the launch computed the way launch monitors and golf sims report it: smash factor.
+        """
+        # swept, not sampled: at 15 m/s the head covers ~25 cm per env step, so a distance
+        # checked only at step ends skips clean over the ball. use the closest approach of this
+        # step's head path to where the ball sat when the step began.
+        seg = self.club_pos - self.prev_club_pos
+        s = ((self.prev_ball_pos - self.prev_club_pos) * seg).sum(-1) / (seg * seg).sum(-1).clamp_min(1e-9)
+        s = s.clamp(0.0, 1.0)
+        closest = self.prev_club_pos + s.unsqueeze(-1) * seg
+        swept_dist = torch.linalg.norm(self.prev_ball_pos - closest, dim=-1)
+
+        # the head at closest approach, in its own frame: orientation interpolated through the
+        # step (nlerp), ball offset and head velocity expressed in it
+        q0, q1 = self.prev_club_quat, self.club_quat
+        q1 = torch.where((q0 * q1).sum(-1, keepdim=True) < 0, -q1, q1)
+        q = normalize(q0 + s.unsqueeze(-1) * (q1 - q0))
+        off = quat_apply_inverse(q, self.prev_ball_pos - closest)
+        v_local = quat_apply_inverse(q, self.club_vel)
+        # the swept test is a sphere; the head is a long, short box. the ball has to overlap it
+        on_head = (off.abs() <= self.head_half + self.ball_r).all(-1)
+        # the side that leads through the ball strikes it: +x is the face, -x the back. (at a
+        # square strike's closest point the ball's offset along x is ~0, so position can't tell)
+        side = torch.where(v_local[:, 0] >= 0, 1.0, -1.0)
+        v_in = v_local[:, 0].abs()  # head speed into the ball, along the striking side's normal
+
+        # armed from an EARLIER step: a head that pokes the ball and leaves in one step isn't a swing.
+        # arming exists at all because the head starts inside the impact radius, which made
+        # contact_rate 1.0 from iteration 0.
         hit = (
-            (self.club_ball_dist < self.cfg.impact_radius)
-            & (self.club_speed > self.cfg.impact_min_speed)
+            (swept_dist < self.cfg.impact_radius)
+            & on_head
+            & (v_in > self.cfg.impact_min_speed)
             & self.armed
             & ~self.impacted
         )
+
+        # smash factor = ball speed / clubhead speed. dead centre of a driver face ~1.47, falling
+        # off away from the sweet spot (twice as fast up-down: the face is half as tall). the
+        # back of the head isn't a face, so it gets the floor.
+        sweet = torch.exp(-(off[:, 1] / self.cfg.smash_sigma_toe) ** 2 - (off[:, 2] / self.cfg.smash_sigma_high) ** 2)
+        smash = self.cfg.smash_min + (self.cfg.smash_max - self.cfg.smash_min) * sweet
+        smash = torch.where(side > 0, smash, torch.full_like(smash, self.cfg.smash_min))
+        # start direction: mostly the face, partly the path (the launch-monitor rule for a driver)
+        normal = quat_apply(q, torch.stack([side, torch.zeros_like(side), torch.zeros_like(side)], dim=-1))
+        w = self.cfg.face_launch_weight
+        direction = normalize(w * normal + (1.0 - w) * normalize(self.club_vel))
+        speed = smash * v_in
+
+        ids = hit.nonzero(as_tuple=False).squeeze(-1)
+        if len(ids) > 0:
+            launch = torch.zeros(len(ids), 6, device=self.device)
+            launch[:, :3] = speed[ids].unsqueeze(-1) * direction[ids]
+            self.ball.write_root_velocity_to_sim_index(root_velocity=launch, env_ids=ids)
+        self.launch_speed = torch.where(hit, speed, self.launch_speed)
+        self.smash = torch.where(hit, smash, self.smash)
+
+        self.armed |= self.club_ball_dist > self.cfg.impact_arm_dist
         self.impact_speed = torch.where(hit, self.club_speed, self.impact_speed)
         self.impacted |= hit
         self.post_impact += self.impacted.long()
-        self.min_dist = torch.minimum(self.min_dist, self.club_ball_dist)
+        self.min_dist = torch.minimum(self.min_dist, swept_dist)
+        self.prev_club_pos.copy_(self.club_pos)
+        self.prev_club_quat.copy_(self.club_quat)
+        self.prev_ball_pos.copy_(self.ball_pos)
 
     def _get_observations(self) -> dict[str, torch.Tensor]:
         obs = torch.cat(
@@ -125,8 +201,10 @@ class GolfEnv(DirectRLEnv):
         # gated on `armed`: ungated, the policy just pokes the ball from address and never
         # swings (measured: contact_rate went 0 -> 0.33 -> 0 while ball speed kept climbing).
         # only a strike that backswung first gets paid.
-        ball_speed = torch.linalg.norm(self.ball_vel, dim=-1)
-        gained = torch.relu(ball_speed - self.max_ball_speed) * self.armed.float()
+        # the launch the strike computed (0 before it). nothing else can move the ball: it has
+        # no collider, so kicks and pre-backswing pokes earn nothing by construction
+        ball_speed = self.launch_speed
+        gained = torch.relu(ball_speed - self.max_ball_speed)
         self.max_ball_speed = torch.maximum(self.max_ball_speed, ball_speed)
         ball_reward = self.cfg.ball_speed_weight * gained / self.step_dt
 
@@ -177,6 +255,7 @@ class GolfEnv(DirectRLEnv):
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         self._compute_intermediate_values()
+        self._update_contact()
         # stage 0: no fall termination. flinging itself over to swing is allowed.
         died = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         done = (self.episode_length_buf >= self.max_episode_length) | (
@@ -192,6 +271,9 @@ class GolfEnv(DirectRLEnv):
         log["Metrics/contact_rate"] = self.impacted[env_ids].float().mean()
         log["Metrics/min_club_ball_dist"] = self.min_dist[env_ids].mean()
         log["Metrics/impact_speed"] = self.impact_speed[env_ids].mean()
+        struck = self.impacted[env_ids]
+        if struck.any():
+            log["Metrics/smash"] = self.smash[env_ids][struck].mean()
 
         super()._reset_idx(env_ids)
         index_fill_(self.actions, env_ids, 0.0)
@@ -202,6 +284,8 @@ class GolfEnv(DirectRLEnv):
         index_fill_(self.armed, env_ids, False)
         index_fill_(self.backswing, env_ids, 0.0)
         index_fill_(self.max_ball_speed, env_ids, 0.0)
+        index_fill_(self.launch_speed, env_ids, 0.0)
+        index_fill_(self.smash, env_ids, 0.0)
 
         # golfer back to the address pose, offset into its env
         root_pose = self.robot.data.default_root_pose.torch[env_ids].clone()
@@ -220,14 +304,10 @@ class GolfEnv(DirectRLEnv):
         self.robot.write_joint_state_to_sim_index(position=joint_pos, velocity=joint_vel, env_ids=env_ids)
 
         # ball back on the tee
-        ball_pose = torch.zeros(len(env_ids), 7, device=self.device)
-        ball_pose[:, :3] = (
-            torch.tensor(self.cfg.ball_pos, device=self.device) + self.scene.env_origins[env_ids]
-        )
-        ball_pose[:, 3] = 1.0
-        self.ball.write_root_pose_to_sim_index(root_pose=ball_pose, env_ids=env_ids)
-        self.ball.write_root_velocity_to_sim_index(
-            root_velocity=torch.zeros(len(env_ids), 6, device=self.device), env_ids=env_ids
-        )
+        self.ball.write_root_pose_to_sim_index(root_pose=self.tee_pose[env_ids], env_ids=env_ids)
+        self.ball.write_root_velocity_to_sim_index(root_velocity=self.ball_rest[env_ids], env_ids=env_ids)
 
         self._compute_intermediate_values()
+        self.prev_club_pos[env_ids] = self.club_pos[env_ids]
+        self.prev_club_quat[env_ids] = self.club_quat[env_ids]
+        self.prev_ball_pos[env_ids] = self.ball_pos[env_ids]
