@@ -478,6 +478,7 @@ function renderSidebar() {
       ["Clubhead at impact", mph(s.mean_impact_club_speed)],
       ["Lead hand at impact", mph(s.mean_impact_hand_speed)],
       ["Address to impact", `${s.mean_impact_time.toFixed(2)} s`],
+      ...(s.mean_backswing ? [["Backswing (head to ball at the top)", `${s.mean_backswing.toFixed(2)} m at ${s.mean_top_time.toFixed(2)} s`]] : []),
     ] : []),
     ["Fell over", pct(s.fell_rate)],
     ...(s.mean_finish_torso ? [["Torso at finish (address ~1.18 m)", `${s.mean_finish_torso.toFixed(2)} m`]] : []),

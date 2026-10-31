@@ -12,7 +12,7 @@ from isaaclab.utils.math import normalize, quat_apply, quat_apply_inverse, sampl
 from isaaclab.utils.string import resolve_matching_names_values
 
 from .golf_env_cfg import MPH, GolfEnvCfg, apply_club
-from .golfer import CLUB_BODY, LEAD_HAND, TRAIL_HAND
+from .golfer import CLUB_BODY, DAMPING, LEAD_HAND, TRAIL_HAND
 from .shapes import body_shapes
 
 
@@ -21,6 +21,7 @@ class GolfEnv(DirectRLEnv):
 
     def __init__(self, cfg: GolfEnvCfg, render_mode: str | None = None, **kwargs):
         apply_club(cfg)  # here, not in the cfg, so an env.club= override takes effect
+        cfg.scene.robot.actuators["body"].damping = {k: v * cfg.damping_scale for k, v in DAMPING.items()}
         super().__init__(cfg, render_mode, **kwargs)
 
         self.robot, self.ball = self.scene["robot"], self.scene["ball"]
@@ -53,6 +54,7 @@ class GolfEnv(DirectRLEnv):
         self.impact_time = torch.zeros(self.num_envs, device=self.device)
         self.armed = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self.backswing = torch.zeros(self.num_envs, device=self.device)
+        self.top_dist = torch.zeros(self.num_envs, device=self.device)
         self.max_ball_speed = torch.zeros(self.num_envs, device=self.device)
         self.launch_speed = torch.zeros(self.num_envs, device=self.device)
         self.smash = torch.zeros(self.num_envs, device=self.device)
@@ -177,6 +179,7 @@ class GolfEnv(DirectRLEnv):
         self.new_hit = hit
 
         self.armed |= self.club_ball_dist > self.cfg.impact_arm_dist
+        self.top_dist = torch.where(self.impacted | hit, self.top_dist, torch.maximum(self.top_dist, self.club_ball_dist))
         self.impact_speed = torch.where(hit, self.club_speed, self.impact_speed)
         hand_speed = torch.linalg.norm(self.robot.data.body_link_lin_vel_w.torch[:, self._lead_idx], dim=-1)
         self.impact_hand_speed = torch.where(hit, hand_speed, self.impact_hand_speed)
@@ -311,6 +314,7 @@ class GolfEnv(DirectRLEnv):
             log["Metrics/smash"] = self.smash[env_ids][struck].mean()
             log["Metrics/backwards_rate"] = self.backwards[env_ids][struck].float().mean()
             log["Metrics/offline_deg"] = self.offline[env_ids][struck].abs().mean()
+            log["Metrics/backswing_m"] = self.top_dist[env_ids][struck].mean()
 
         super()._reset_idx(env_ids)
         index_fill_(self.actions, env_ids, 0.0)
@@ -322,6 +326,7 @@ class GolfEnv(DirectRLEnv):
         index_fill_(self.impact_time, env_ids, 0.0)
         index_fill_(self.armed, env_ids, False)
         index_fill_(self.backswing, env_ids, 0.0)
+        index_fill_(self.top_dist, env_ids, 0.0)
         index_fill_(self.max_ball_speed, env_ids, 0.0)
         index_fill_(self.launch_speed, env_ids, 0.0)
         index_fill_(self.smash, env_ids, 0.0)

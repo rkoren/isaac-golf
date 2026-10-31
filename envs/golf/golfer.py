@@ -16,6 +16,12 @@ LEAD_HAND = "left_hand"
 TRAIL_HAND = "right_hand"
 
 DRIVER = address("driver")
+# [N*m*s/rad] stock humanoid joint damping scaled by GolfEnvCfg.damping_scale
+DAMPING = {
+    ".*_waist.*": 5.0, ".*_upper_arm.*": 5.0, "pelvis": 5.0, ".*_lower_arm": 1.0,
+    ".*_thigh:0": 5.0, ".*_thigh:1": 5.0, ".*_thigh:2": 5.0,
+    ".*_shin": 0.1, ".*_foot.*": 1.0,
+}
 
 GOLFER_CFG = ArticulationCfg(
     prim_path="{ENV_REGEX_NS}/Robot",
@@ -49,11 +55,7 @@ GOLFER_CFG = ArticulationCfg(
                 ".*_thigh:0": 10.0, ".*_thigh:1": 20.0, ".*_thigh:2": 10.0,
                 ".*_shin": 5.0, ".*_foot.*": 2.0,
             },
-            damping={
-                ".*_waist.*": 5.0, ".*_upper_arm.*": 5.0, "pelvis": 5.0, ".*_lower_arm": 1.0,
-                ".*_thigh:0": 5.0, ".*_thigh:1": 5.0, ".*_thigh:2": 5.0,
-                ".*_shin": 0.1, ".*_foot.*": 1.0,
-            },
+            damping=DAMPING,
             joint_velocity_limit={".*": 100.0},
             armature={".*": 0.01},
             joint_effort_limit=150.0,

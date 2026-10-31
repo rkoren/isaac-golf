@@ -211,6 +211,10 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
         ret = sc[..., 6].sum(1)
         fell = min_torso < 0.6
         finish_torso = sc[torch.arange(N, device=u.device), (length - 1).clamp_min(0), 3]  # kneeling shows here, not in fell
+        # top of the backswing: farthest the head gets from the ball before impact
+        before = valid & ((idx < hit_frame[:, None]) | ~hit[:, None])
+        top = torch.where(before, sc[..., 2], 0.0).max(1)
+        backswing, top_time = top.values, top.indices * u.step_dt
         # what the reward pays: armed gain over the running max
         ball_v = sc[..., 1] * valid
         prev_max = torch.cat([torch.zeros_like(ball_v[:, :1]), ball_v.cummax(1).values[:, :-1]], 1)
@@ -251,6 +255,8 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
             "mean_impact_hand_speed": impact[hit, 1].mean().item() if hit.any() else 0.0,
             "mean_impact_time": impact[hit, 2].mean().item() if hit.any() else 0.0,
             "backwards_rate": backwards.float().mean().item(),
+            "mean_backswing": backswing[hit].mean().item() if hit.any() else 0.0,
+            "mean_top_time": top_time[hit].mean().item() if hit.any() else 0.0,
             "mean_offline_deg": offline[hit].abs().mean().item() if hit.any() else 0.0,
             "offline_bias_deg": offline[hit].mean().item() if hit.any() else 0.0,
             "fell_rate": fell.float().mean().item(),
@@ -275,7 +281,8 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
             f"{summary['pre_arm_touch_rate']:.0%}  struck after backswing by: {summary['struck_by'] or 'nothing'}"
         )
         print(
-            f"    at impact: club {MPH * summary['mean_impact_club_speed']:.1f} mph  "
+            f"    backswing {summary['mean_backswing']:.2f} m at {summary['mean_top_time']:.2f} s  "
+            f"at impact: club {MPH * summary['mean_impact_club_speed']:.1f} mph  "
             f"lead hand {MPH * summary['mean_impact_hand_speed']:.1f} mph  "
             f"{summary['mean_impact_time']:.2f} s after address  "
             f"offline {summary['mean_offline_deg']:.0f} deg (mean {summary['offline_bias_deg']:+.0f}, + = right)"
@@ -293,7 +300,7 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
                     "fell": bool(fell[i]), "ret": ret[i].item(), "paid": paid[i].item(), "struck": struck[i],
                     "smash": smash[i].item(), "backwards": bool(backwards[i]),
                     "impactClub": impact[i, 0].item(), "impactHand": impact[i, 1].item(), "impactTime": impact[i, 2].item(),
-                    "offline": offline[i].item(),
+                    "offline": offline[i].item(), "backswing": backswing[i].item(), "topTime": top_time[i].item(),
                     "pts": pack(mm), "sc": pack(sc[i, :L].float()),
                 }
             )

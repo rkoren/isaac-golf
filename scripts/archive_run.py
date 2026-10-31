@@ -39,7 +39,7 @@ out.mkdir(parents=True, exist_ok=True)
 play_dir = run / "videos" / "play"
 # replay with the run's club and body (reward-only settings don't change the swing)
 env_yaml = (run / "params" / "env.yaml").read_text(encoding="utf-8") if (run / "params" / "env.yaml").exists() else ""
-REPLAY = ("club", "muscle", "muscle_k", "impact_arm_dist")
+REPLAY = ("club", "muscle", "muscle_k", "damping_scale", "impact_arm_dist")
 OVERRIDES = [f"env.{k}={m.group(1)}" for k in REPLAY if (m := re.search(rf"^{k}: (\S+)", env_yaml, re.M))]
 print(f"[archive] replay overrides: {OVERRIDES}")
 
@@ -93,6 +93,7 @@ if viewers:
                + f", ball {MPH * s['mean_max_ball_speed']:.1f} mph, club {MPH * s['mean_max_club_speed']:.1f} mph"
                + (f", hands {MPH * s['mean_impact_hand_speed']:.1f} mph, impact {s['mean_impact_time']:.2f} s"
                   if s.get("mean_impact_time") else "")
+               + (f", backswing {s['mean_backswing']:.2f} m" if s.get("mean_backswing") else "")
                + (f", smash {s['mean_smash']:.2f}" if s.get("mean_smash") else "")
                + (f", offline {s['mean_offline_deg']:.0f}°" if s.get("mean_offline_deg") is not None else "")
                + f", fell {s['fell_rate']:.0%}"

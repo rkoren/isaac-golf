@@ -114,6 +114,7 @@ class GolfEnvCfg(DirectRLEnvCfg):
     muscle: bool = False
     muscle_vmax: dict[str, float] = MUSCLE_VMAX
     muscle_k: float = 0.25              # Hill curvature (~0.25 for human muscle)
+    damping_scale: float = 1.0          # joint damping
     club: str = "driver"                # key into clubs.py; apply_club() sets everything club-specific
     ball_pos: tuple[float, float, float] = BALL_POS
     # aim based on golfer (left for a righty)

@@ -459,3 +459,56 @@ All 64 rollouts, mean actions, final checkpoint (`model_897`):
   taller finish would have been credited to the stricter finish curve.
 - Direction is cheap to learn once strikes are reliable; tighten σ (e.g. 8°) to keep pressure on the
   last few degrees.
+
+## Joint damping: the hidden brake (2026-10-31)
+
+Question: why doesn't the swing lengthen? Every run so far tops out ~1.18 m from the ball at 0.17 s,
+exactly the 1.2 m `backswing_cap` pays for.
+
+The stock humanoid's implicit actuators carry joint damping: 5 N·m·s/rad on waist, shoulders, pelvis and
+hips (1 on elbows and feet, 0.1 on knees), roughly 10–50× a human joint's passive damping. Damping
+torque grows with joint speed, so each joint has a terminal speed where muscle torque = damping torque,
+reached within a few degrees. Past that, a longer backswing only feeds the damper.
+
+Downswing energy budget (top of backswing → impact, 64 rollouts, scratchpad `damping_audit.py`):
+
+| policy | muscle work | lost to dampers | returned by joint springs | club KE at impact |
+|---|---|---|---|---|
+| run 19 (stock damping) | 222 J | **163 J (74%)** | 10 J | 53 J |
+| run 22 (damping × 0.1) | 161 J | 51 J (32%) | 58 J | 142 J |
+
+In run 19, at impact the damper out-pulls the muscle on waist twist, both shoulders and both hips
+(e.g. waist 49 vs 12 N·m): those joints are already slowing down.
+
+New knob `env.damping_scale` (default 1.0) scales `DAMPING` in `golfer.py`. `archive_run.py` replays it.
+New metric: backswing, the farthest the head gets from the ball before impact (`Metrics/backswing_m`,
+`record_swings.py`, viewer).
+
+Runs, muscles on, from scratch with run 17 → 18's recipe (strike stage 300 iters, then
+`env.finish_frac=0.5 env.impact_arm_dist=1.0 env.backswing_cap=1.2` 300 iters):
+
+| run | change | clubhead at impact | lead hand | backswing | address → impact | smash | offline | fell | torso at finish |
+|---|---|---|---|---|---|---|---|---|---|
+| 17 → 18 (reference) | stock damping | 39.7 mph | 9.1 mph | 1.18 m | 0.32 s | 1.31 | +7° | 11% | 0.84 m |
+| 21 → 22 `lowdamp` | `env.damping_scale=0.1` | **67.5 mph** | 22.4 mph | 1.28 m | 0.26 s | 1.22 | +12° | **98%** | 0.30 m |
+| 23 → 24 `lowdamp_g995` | also `agent.algorithm.gamma=0.995` | 48.8 mph | 12.7 mph | 1.22 m | 0.26 s | 1.22 | −61° | 98% | 0.21 m |
+
+- Speed: +70% clubhead with hands at human speed (~20 mph). The damper loss is mostly gone and the
+  policy now loads the joint springs (hips, arms) on the way back and gets 58 J back on the way down,
+  a crude stretch-and-recoil. The swing looks more like one: arms extended, club high in the follow-through.
+- The backswing barely grew (1.18 → 1.28 m). At impact the arms now run at 11–22 rad/s against a muscle
+  vmax of 25, so they're at their speed limit: a longer arm arc can't add arm speed. In a human the extra
+  comes from the chain behind the arms (hips → torso → arms → wrists); here the torso barely turns at
+  impact (waist ~6 rad/s, pelvis ~0) and there are no wrists.
+- Balance collapsed: 98% end on the ground (sits down after the follow-through, then lies back). The
+  dampers had been holding the legs steady for free. And falling roughly breaks even under the held-finish
+  reward: 82 mph ball × ½ pay ≈ run 18's 53 mph × 0.8 pay.
+- γ 0.995 is a discount-factor test: at 0.99 a reward 1 s later is worth 45% less, which could favour a
+  rushed swing. It didn't lengthen anything (impact 0.26 s in both) and this seed trained worse
+  (offline −61°, slower). Not the cause; not adopted. Single seeds, so treat the gap loosely.
+
+**Takeaway**
+- Measure where the energy goes before reshaping rewards. The short swing was a physics artifact (a speed
+  cap from damping), not something to fix with a backswing reward.
+- Human-like damping makes balance an active skill. Standing now needs either its own reward
+  (`stand_weight`, `feet_slip_weight`) or stiffer legs.
