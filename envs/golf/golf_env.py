@@ -31,6 +31,10 @@ class GolfEnv(DirectRLEnv):
         joint_ids, _, gears = resolve_matching_names_values(self.cfg.joint_gears, self.robot.joint_names)
         self.joint_gears[joint_ids] = torch.tensor(gears, device=self.device)
         self.gear_ratio_scaled = self.joint_gears / torch.max(self.joint_gears)
+        self.muscle_vmax = torch.ones(self.robot.num_joints, device=self.device)
+        joint_ids, _, vmax = resolve_matching_names_values(self.cfg.muscle_vmax, self.robot.joint_names)
+        self.muscle_vmax[joint_ids] = torch.tensor(vmax, device=self.device)
+        self.muscle_frac = torch.ones(self.num_envs, device=self.device)
 
         body_idx, _ = self.robot.find_bodies([CLUB_BODY, LEAD_HAND, TRAIL_HAND], preserve_order=True)
         self._club_idx, self._lead_idx, self._trail_idx = body_idx
@@ -53,6 +57,7 @@ class GolfEnv(DirectRLEnv):
         self.launch_speed = torch.zeros(self.num_envs, device=self.device)
         self.smash = torch.zeros(self.num_envs, device=self.device)
         self.backwards = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self.offline = torch.zeros(self.num_envs, device=self.device)
         self.new_hit = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
         box = next(s for s in body_shapes(self.cfg.scene.robot.spawn.usd_path)[CLUB_BODY] if s[0] == "box")
@@ -79,12 +84,18 @@ class GolfEnv(DirectRLEnv):
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         self.actions = actions.clone()
-        # clamp before scaling: unbounded efforts drive the solver to NaN
-        forces = self.action_scale * self.joint_gears * torch.clamp(self.actions, -1.0, 1.0)
-        self.robot.actuators.target_command.set_effort_index(value=forces)
 
     def _apply_action(self) -> None:
-        pass
+        # every physics substep, so the muscle curve sees current joint speed
+        # clamp before scaling: unbounded efforts drive the solver to NaN
+        forces = self.action_scale * self.joint_gears * torch.clamp(self.actions, -1.0, 1.0)
+        if self.cfg.muscle:
+            # shortening speed as a fraction of vmax; lengthening keeps full torque
+            x = (self.robot.data.joint_vel.torch * torch.sign(forces) / self.muscle_vmax).clamp(0.0, 1.0)
+            capped = forces * (1.0 - x) / (1.0 + x / self.cfg.muscle_k)
+            self.muscle_frac = capped.abs().sum(-1) / forces.abs().sum(-1).clamp_min(1e-6)
+            forces = capped
+        self.robot.actuators.target_command.set_effort_index(value=forces)
 
     def _compute_intermediate_values(self):
         self.torso_pos = self.robot.data.root_pos_w.torch
@@ -159,6 +170,10 @@ class GolfEnv(DirectRLEnv):
         # backwards: back of the head, or the ball heading away from the target
         away = (side < 0) | ((direction * self.target_dir).sum(-1) < 0)
         self.backwards = torch.where(hit, away, self.backwards)
+        # horizontal launch angle off the target line [deg], + = right of target
+        flat, tgt = direction[:, :2], self.target_dir[:, :2]
+        offline = torch.rad2deg(torch.atan2(flat[:, 0] * tgt[:, 1] - flat[:, 1] * tgt[:, 0], (flat * tgt).sum(-1)))
+        self.offline = torch.where(hit, offline, self.offline)
         self.new_hit = hit
 
         self.armed |= self.club_ball_dist > self.cfg.impact_arm_dist
@@ -195,6 +210,9 @@ class GolfEnv(DirectRLEnv):
     def _get_rewards(self) -> torch.Tensor:
         # 1. ball speed from the computed launch, paid once; backwards hits pay nothing and cost
         ball_speed = self.launch_speed * (~self.backwards).float()
+        if self.cfg.aim_sigma > 0:
+            # direction: a sideways hit pays less than a straight one
+            ball_speed = ball_speed * torch.exp(-(self.offline / self.cfg.aim_sigma) ** 2)
         backwards = self.cfg.backwards_penalty * (self.new_hit & self.backwards).float() / self.step_dt
         gained = torch.relu(ball_speed - self.max_ball_speed)
         self.max_ball_speed = torch.maximum(self.max_ball_speed, ball_speed)
@@ -202,7 +220,8 @@ class GolfEnv(DirectRLEnv):
         # hold the finish: part of the payout waits for the end of the finish, scaled by posture
         frac = self.cfg.finish_frac
         finishing = (self.post_impact == self.cfg.post_impact_steps + 1).float()
-        upright = torch.clamp((self.torso_pos[:, 2] - 0.6) / 0.4, 0.0, 1.0)
+        lo, hi = self.cfg.finish_low, self.cfg.finish_high
+        upright = torch.clamp((self.torso_pos[:, 2] - lo) / (hi - lo), 0.0, 1.0)
         finish = self.cfg.ball_speed_weight * frac * ball_speed * upright * finishing / self.step_dt
         ball_reward = (1.0 - frac) * ball_reward + finish
 
@@ -246,6 +265,8 @@ class GolfEnv(DirectRLEnv):
         log["Reward/feet"] = -feet.mean()
         log["Reward/backwards"] = -backwards.mean()
         log["Metrics/torso_height"] = self.torso_pos[:, 2].mean()
+        if self.cfg.muscle:
+            log["Metrics/muscle_torque_frac"] = self.muscle_frac.mean()
         log["Metrics/club_ball_dist"] = self.club_ball_dist.mean()
         log["Metrics/clubhead_speed_mph"] = MPH * self.club_speed.mean()
         log["Metrics/ball_speed_mph"] = MPH * ball_speed.mean()
@@ -289,6 +310,7 @@ class GolfEnv(DirectRLEnv):
             log["Metrics/impact_time"] = self.impact_time[env_ids][struck].mean()
             log["Metrics/smash"] = self.smash[env_ids][struck].mean()
             log["Metrics/backwards_rate"] = self.backwards[env_ids][struck].float().mean()
+            log["Metrics/offline_deg"] = self.offline[env_ids][struck].abs().mean()
 
         super()._reset_idx(env_ids)
         index_fill_(self.actions, env_ids, 0.0)
@@ -304,6 +326,7 @@ class GolfEnv(DirectRLEnv):
         index_fill_(self.launch_speed, env_ids, 0.0)
         index_fill_(self.smash, env_ids, 0.0)
         index_fill_(self.backwards, env_ids, False)
+        index_fill_(self.offline, env_ids, 0.0)
 
         # golfer back to the address pose, offset into its env
         root_pose = self.robot.data.default_root_pose.torch[env_ids].clone()

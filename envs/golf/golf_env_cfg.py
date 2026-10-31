@@ -27,6 +27,12 @@ MPH = 2.23694  # m/s -> mph, for reporting only
 BALL_POS = tuple(address("driver")["ball_pos"])  # 2 cm from clubface
 TEE_H = BALL_POS[2] - BALL_R   # tee
 
+# limiting movement
+MUSCLE_VMAX = {
+    ".*_waist.*": 20.0, "pelvis": 20.0, ".*_upper_arm.*": 25.0, ".*_lower_arm": 25.0,
+    ".*_thigh.*": 25.0, ".*_shin": 30.0, ".*_foot.*": 25.0,
+}
+
 GRASS = (0.30, 0.62, 0.22)
 BALL_COLOR = (1.0, 0.1, 0.65)
 BALL_GLOW = (1.6, 0.1, 1.0)
@@ -105,6 +111,9 @@ class GolfEnvCfg(DirectRLEnvCfg):
     )
 
     joint_gears: dict[str, float] = JOINT_GEARS
+    muscle: bool = False
+    muscle_vmax: dict[str, float] = MUSCLE_VMAX
+    muscle_k: float = 0.25              # Hill curvature (~0.25 for human muscle)
     club: str = "driver"                # key into clubs.py; apply_club() sets everything club-specific
     ball_pos: tuple[float, float, float] = BALL_POS
     # aim based on golfer (left for a righty)
@@ -146,6 +155,9 @@ class GolfEnvCfg(DirectRLEnvCfg):
     face_launch_weight: float = 0.85    # start direction: face vs path
     backwards_penalty: float = 20.0     # one-off: back of head or ball heading away from target
     finish_frac: float = 0.0            # share of ball pay held until the finish, scaled by posture
+    finish_low: float = 0.6             # [m] torso height at the finish that earns nothing
+    finish_high: float = 1.0            # [m] torso height that earns full finish credit
+    aim_sigma: float = 0.0              # [deg] ball pay falls off with angle off the target line
 
     # obs scales
     dof_vel_scale: float = 0.1

@@ -378,3 +378,84 @@ Now logged per strike: TensorBoard `Metrics/impact_speed_mph` (strikes only; it 
 zeros for misses), `Metrics/impact_hand_speed_mph`, `Metrics/impact_time`; also in `record_swings.py`,
 the viewer and `media/index.md`. Candidate fix, not yet tried: a torque–speed curve (Isaac Lab
 `DCMotorCfg`), or a hand-speed cap in the reward.
+
+## Muscles: Hill torque–speed curve (2026-10-30)
+
+`env.muscle=true` scales each joint's torque by Hill's force–velocity curve, (1 − x)/(1 + x/0.25) with
+x = shortening speed / vmax (vmax 20–30 rad/s per joint, `MUSCLE_VMAX`), every physics substep.
+Lengthening keeps full torque; past vmax the joint goes slack. Baseline, run 12 with muscles switched on
+and no retraining: clubhead at impact 77 → 44 mph, hands 23 → 14 mph, 73% fall. Its timing no longer works.
+
+Run 12 at impact, before muscles: elbows ~30 rad/s, hips and knees 26–29 rad/s, most joints at full
+torque for 50–90% of the downswing (bang-bang). Body mass 41 kg; arm segments are human-sized.
+
+All 64 rollouts, mean actions:
+
+| run | setup | clubhead at impact | lead hand | address → impact | smash | fell | torso at finish |
+|---|---|---|---|---|---|---|---|
+| 12 (reference) | no muscles | 77.3 mph | 23.4 mph | 0.21 s | 1.18 | 6% | 0.72 m |
+| 16 `driver_muscle_resume` | muscles on, resumed from 12, both nudges, 300 iters | 48.9 mph | 15.5 mph | 0.28 s | 1.28 | 2% | 0.70 m |
+| 17 → 18 `driver_muscle_full_finish` | muscles on from scratch: strike stage, then both nudges | 39.7 mph | 9.1 mph | 0.32 s | **1.31** | 11% | **0.84 m** |
+
+- Speed comes down to human-limited (hands now at or below the ~20 mph a real golfer reaches), and
+  strikes get more centred. Run 18's best swings hit 1.42–1.47 smash, the driver's ceiling.
+- Run 18 found its own release: hands at 9 mph but clubhead at 40, a 4.5× club-to-hand ratio
+  (runs 12/15: 3.3× / 2.6×; a real golfer's wrist release gives ~4–5×). With no wrist joint, it gets
+  this by rotating the whole lead arm so the hand stays near the axis while the club sweeps around it.
+  It also lunges least (torso ~2 mph at impact vs 5–8).
+- The swing did not lengthen: top of the backswing at ~0.2 s, impact ~0.3 s (a human takes ~1 s).
+  Fine-tuning (16) kept the old timing, only slower.
+- Standing did not start paying for itself. Both still kneel at the finish; 18 stands tallest
+  (0.84 m vs address 1.18). The finish credit still pays 22% for a 0.69 m kneel, and dropping
+  into the shot is free energy from gravity.
+- Run 18's finish reward was still climbing at iteration 598 (2.6 → 14.5 over the last 100).
+
+Archive bug found and fixed: `archive_run.py` replayed only `club` from the run's `env.yaml`, so 16's
+first archive was filmed without muscles (20.8 mph hands, 72% "fell"). It now replays `club`, `muscle`,
+`muscle_k` and `impact_arm_dist`. `record_swings.py` now reports torso height at the finish, since
+"fell" (torso below 0.6 m) misses kneeling.
+
+**Takeaway**
+- Human-limited muscles fix the superhuman speed and improve strike quality, but on their own they don't
+  make standing pay or the swing longer: the policy keeps the cheapest motion that still works.
+
+## Aim and a stricter finish, with a control (2026-10-31)
+
+Until now the ball pay ignored direction short of backwards: a hit 40° right paid the same as a straight
+one. Archived final checkpoints, launch angle off the target line: run 12 +30°, run 16 +40°, run 18 +7°
+(all to the right, a push).
+
+New knobs, both off by default:
+- `env.aim_sigma` [deg]: ball pay × exp(−(offline / σ)²), offline being the horizontal launch angle off
+  the target line. Logged as `Metrics/offline_deg`; `record_swings.py` and the viewer report it
+  (+ = right of target).
+- `env.finish_low` / `env.finish_high` [m]: the torso heights at the finish that earn zero / full
+  finish credit (were fixed at 0.6 / 1.0, which paid 22% for a 0.69 m kneel).
+
+Both runs resume run 18's `model_598.pt` with its settings (`env.muscle=True env.finish_frac=0.5
+env.impact_arm_dist=1.0 env.backswing_cap=1.2`), 300 iterations, 1,024 envs, ~8.5 min each, side by side.
+
+All 64 rollouts, mean actions, final checkpoint (`model_897`):
+
+| run | change | clubhead at impact | smash | offline | fell | torso at finish |
+|---|---|---|---|---|---|---|
+| 18 (start) | — | 39.7 mph | 1.31 | +7° | 11% | 0.84 m |
+| 19 `driver_muscle_aim_stand` | `env.finish_low=0.8 env.aim_sigma=15` | 41.1 mph | 1.34 | **+4°** (2.5–4.2° at 700–897) | 2% | 1.00 m (1.00–1.04) |
+| 20 `driver_muscle_more` | none (control) | 41.1 mph | 1.32 | +6° (6.4–7.6°) | 2% | 0.98 m (0.96–0.98) |
+
+- Aim works and costs nothing: offline roughly halves with no loss of speed or smash. In training it
+  fell from 7.6° to ~3° within the first 50 iterations. Every strike still pushes right; at σ = 15° a 4°
+  miss keeps 93% of the pay, so the pressure fades as it gets close.
+- Standing up was mostly more training. The control rose from 0.84 to 0.98 m on its own; the stricter
+  finish curve added at most a few cm (1.00–1.04 vs 0.96–0.98, within checkpoint-to-checkpoint noise).
+  Run 18's finish reward was still climbing when it stopped, and that is what these 300 iterations bought.
+- Watching the clips: the kneel became a wide lunge. The trail foot slides far back, the torso bends
+  over the lead leg, then rises toward the end of the finish. Upright-ish, not a golf finish; foot slide
+  is unpenalised (`feet_slip_weight=0`).
+- The swing still doesn't lengthen: impact at 0.32 s, hands ~10 mph, clubhead ~41 mph.
+
+**Takeaway**
+- Check a reward change against a control run started from the same checkpoint. Without run 20, run 19's
+  taller finish would have been credited to the stricter finish curve.
+- Direction is cheap to learn once strikes are reliable; tighten σ (e.g. 8°) to keep pressure on the
+  last few degrees.

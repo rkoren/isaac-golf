@@ -127,6 +127,7 @@ catch (e) {
 const M = DATA.meta, NP = DATA.nPts, BALL = NP - 1, NSC = 7;
 const SC = { club: 0, ball: 1, dist: 2, torso: 3, armed: 4, impacted: 5, reward: 6 };
 const MPH = 2.23694, mph = v => `${(v * MPH).toFixed(1)} mph`;  // data is m/s
+const off = d => `${Math.abs(d).toFixed(0)}&deg; ${d >= 0 ? "right" : "left"}`;  // + = right of target
 const COLORS = { core: "#e9a35b", lead: "#d9722f", trail: "#f4c590", shaft: "#cfd5dd", head: "#3a414d" };
 const OUTLINE = "rgba(40, 24, 10, .55)";
 const CLUB_HEAD = DATA.prims.find(p => p.k === "box" && p.part === "club");
@@ -398,6 +399,8 @@ function drawHud(ep, t) {
     `<div class="row"><span class="k">torso height</span><span>${S(ep, t, SC.torso).toFixed(2)} m</span></div>` +
     (ep.smash && ep.struck && t >= ep.struck.frame
       ? `<div class="row"><span class="k">smash factor</span><span>${ep.smash.toFixed(2)}</span></div>` : "") +
+    (ep.offline !== undefined && ep.smash && ep.struck && t >= ep.struck.frame
+      ? `<div class="row"><span class="k">offline</span><span>${off(ep.offline)}</span></div>` : "") +
     `<div class="chips">${armed ? '<span class="chip armed">ARMED</span>' : ""}${hit ? '<span class="chip hit">CONTACT</span>' : ""}` +
     `${ep.struck && t >= ep.struck.frame ? strikeChip(ep) : ""}</div>`;
 }
@@ -468,6 +471,7 @@ function renderSidebar() {
     ["Ball speed paid, mean", mph(s.mean_paid_ball_speed)],
     ...(s.mean_smash ? [["Smash factor, mean strike", s.mean_smash.toFixed(2)]] : []),
     ...(s.backwards_rate !== undefined ? [["Hit backwards", pct(s.backwards_rate)]] : []),
+    ...(s.mean_offline_deg !== undefined ? [["Offline, mean strike", `${s.mean_offline_deg.toFixed(0)}&deg; (mean ${off(s.offline_bias_deg)})`]] : []),
     ["Ball speed, mean max", mph(s.mean_max_ball_speed)],
     ["Clubhead, mean max", mph(s.mean_max_club_speed)],
     ...(s.mean_impact_time ? [
@@ -476,6 +480,7 @@ function renderSidebar() {
       ["Address to impact", `${s.mean_impact_time.toFixed(2)} s`],
     ] : []),
     ["Fell over", pct(s.fell_rate)],
+    ...(s.mean_finish_torso ? [["Torso at finish (address ~1.18 m)", `${s.mean_finish_torso.toFixed(2)} m`]] : []),
     ["Closest approach", `${s.mean_min_dist.toFixed(3)} m`],
     ["Return, mean", s.mean_return.toFixed(1)],
     ["Action std", s.action_std.toFixed(2)],
@@ -494,7 +499,8 @@ function renderSidebar() {
     `<div class="ep ${i === st.ep ? "on" : ""}" data-ep="${i}">` +
     `<span class="rk">#${e.rank}</span>` +
     `<span><div class="nums">paid ${mph(e.paid)}` +
-    `${e.smash ? ` &middot; smash ${e.smash.toFixed(2)}` : ` &middot; closest ${e.minDist.toFixed(3)} m`}</div>` +
+    `${e.smash ? ` &middot; smash ${e.smash.toFixed(2)}` : ` &middot; closest ${e.minDist.toFixed(3)} m`}` +
+    `${e.smash && e.offline !== undefined ? ` &middot; ${off(e.offline)}` : ""}</div>` +
     `<div class="badges">${strikeChip(e)}${e.fell ? '<span class="chip fell">fell</span>' : ""}` +
     `<span class="sub">club ${mph(e.maxClub)}</span></div></span>` +
     `</div>`).join("");

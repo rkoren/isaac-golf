@@ -37,10 +37,11 @@ ckpts = sorted({ckpts[round(i * (len(ckpts) - 1) / max(n - 1, 1))] for i in rang
 out = MEDIA / f"{time.strftime('%Y-%m-%d')}_{args.stage}_{run.name}"
 out.mkdir(parents=True, exist_ok=True)
 play_dir = run / "videos" / "play"
-# replay with the club the run trained with
+# replay with the run's club and body (reward-only settings don't change the swing)
 env_yaml = (run / "params" / "env.yaml").read_text(encoding="utf-8") if (run / "params" / "env.yaml").exists() else ""
-club = re.search(r"^club: (\S+)", env_yaml, re.M)
-OVERRIDES = [f"env.club={club.group(1)}"] if club else []
+REPLAY = ("club", "muscle", "muscle_k", "impact_arm_dist")
+OVERRIDES = [f"env.{k}={m.group(1)}" for k in REPLAY if (m := re.search(rf"^{k}: (\S+)", env_yaml, re.M))]
+print(f"[archive] replay overrides: {OVERRIDES}")
 
 
 def sh(cmd: list[str]) -> None:
@@ -93,7 +94,9 @@ if viewers:
                + (f", hands {MPH * s['mean_impact_hand_speed']:.1f} mph, impact {s['mean_impact_time']:.2f} s"
                   if s.get("mean_impact_time") else "")
                + (f", smash {s['mean_smash']:.2f}" if s.get("mean_smash") else "")
-               + f", fell {s['fell_rate']:.0%}")
+               + (f", offline {s['mean_offline_deg']:.0f}°" if s.get("mean_offline_deg") is not None else "")
+               + f", fell {s['fell_rate']:.0%}"
+               + (f", finish torso {s['mean_finish_torso']:.2f} m" if s.get("mean_finish_torso") else ""))
 
 index = MEDIA / "index.md"
 if not index.exists():

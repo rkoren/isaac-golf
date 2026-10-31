@@ -153,6 +153,7 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
         smash = torch.zeros(N, device=u.device)  # 0 if no strike
         backwards = torch.zeros(N, dtype=torch.bool, device=u.device)
         impact = torch.zeros(N, 3, device=u.device)  # club speed, lead hand speed, time since address
+        offline = torch.zeros(N, device=u.device)  # launch angle off the target line [deg], + = right
 
         # reset inside inference mode too, or the next checkpoint's reset fails
         with torch.inference_mode():
@@ -185,6 +186,8 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
                     backwards |= alive & u.backwards
                 now = torch.stack([u.impact_speed, u.impact_hand_speed, u.impact_time], dim=-1)
                 impact = torch.where(alive[:, None], now, impact)
+                if hasattr(u, "offline"):
+                    offline = torch.where(alive, u.offline, offline)
                 sc[alive, t, :6] = row[alive]
                 length += alive.long()
                 if t == T - 1:
@@ -207,6 +210,7 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
         hit_frame = torch.where(hit, (sc[..., 5] > 0.5).float().argmax(1), -1)
         ret = sc[..., 6].sum(1)
         fell = min_torso < 0.6
+        finish_torso = sc[torch.arange(N, device=u.device), (length - 1).clamp_min(0), 3]  # kneeling shows here, not in fell
         # what the reward pays: armed gain over the running max
         ball_v = sc[..., 1] * valid
         prev_max = torch.cat([torch.zeros_like(ball_v[:, :1]), ball_v.cummax(1).values[:, :-1]], 1)
@@ -247,7 +251,10 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
             "mean_impact_hand_speed": impact[hit, 1].mean().item() if hit.any() else 0.0,
             "mean_impact_time": impact[hit, 2].mean().item() if hit.any() else 0.0,
             "backwards_rate": backwards.float().mean().item(),
+            "mean_offline_deg": offline[hit].abs().mean().item() if hit.any() else 0.0,
+            "offline_bias_deg": offline[hit].mean().item() if hit.any() else 0.0,
             "fell_rate": fell.float().mean().item(),
+            "mean_finish_torso": finish_torso.mean().item(),
             "mean_max_ball_speed": max_ball.mean().item(),
             "best_ball_speed": max_ball.max().item(),
             "mean_max_club_speed": max_club.mean().item(),
@@ -257,6 +264,7 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
         }
         print(
             f"[{ckpt.stem}] contact {summary['contact_rate']:.0%}  fell {summary['fell_rate']:.0%}  "
+            f"torso at finish {summary['mean_finish_torso']:.2f} m  "
             f"ball {MPH * summary['mean_max_ball_speed']:.1f} mph (best {MPH * summary['best_ball_speed']:.1f})  "
             f"club {MPH * summary['mean_max_club_speed']:.1f} mph  closest {summary['mean_min_dist']:.3f} m  "
             f"return {summary['mean_return']:.1f}  action std {summary['action_std']:.2f}"
@@ -269,7 +277,8 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
         print(
             f"    at impact: club {MPH * summary['mean_impact_club_speed']:.1f} mph  "
             f"lead hand {MPH * summary['mean_impact_hand_speed']:.1f} mph  "
-            f"{summary['mean_impact_time']:.2f} s after address"
+            f"{summary['mean_impact_time']:.2f} s after address  "
+            f"offline {summary['mean_offline_deg']:.0f} deg (mean {summary['offline_bias_deg']:+.0f}, + = right)"
         )
 
         episodes = []
@@ -284,6 +293,7 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
                     "fell": bool(fell[i]), "ret": ret[i].item(), "paid": paid[i].item(), "struck": struck[i],
                     "smash": smash[i].item(), "backwards": bool(backwards[i]),
                     "impactClub": impact[i, 0].item(), "impactHand": impact[i, 1].item(), "impactTime": impact[i, 2].item(),
+                    "offline": offline[i].item(),
                     "pts": pack(mm), "sc": pack(sc[i, :L].float()),
                 }
             )
