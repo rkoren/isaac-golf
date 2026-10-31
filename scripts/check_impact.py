@@ -29,6 +29,7 @@ sys.argv = [sys.argv[0]] + [a for a in extra if "=" in a and not a.startswith("-
 import gymnasium as gym
 
 import envs.golf
+from envs.golf.golf_env_cfg import MPH
 from isaaclab_tasks.utils import resolve_task_config
 
 env_cfg, _ = resolve_task_config(args.task, "")
@@ -97,12 +98,12 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
           f"{n} envs, centre strike, face first")
     print(f"rigidity check: head speed / commanded after 1 step, mean {rigid.mean():.3f}, "
           f"range {rigid.min():.3f}-{rigid.max():.3f} (should be ~1)")
-    print(f"{'club m/s':>10} {'travel/substep':>15} {'physics hit':>12} {'detector':>9} {'ball/club':>10}")
+    print(f"{'club mph':>10} {'travel/substep':>15} {'physics hit':>12} {'detector':>9} {'ball/club':>10}")
     edges = torch.arange(0.0, args.v_max + 5.0, 5.0, device=dev)
     for lo, hi in zip(edges[:-1], edges[1:]):
         m = (speeds >= lo) & (speeds < hi)
         if not m.any():
             continue
         mid = speeds[m].mean().item()
-        print(f"{lo:>4.0f}-{hi:<5.0f} {100 * mid * physics_dt:>12.1f} cm {struck[m].float().mean():>11.0%} "
+        print(f"{MPH * lo:>4.0f}-{MPH * hi:<5.0f} {100 * mid * physics_dt:>12.1f} cm {struck[m].float().mean():>11.0%} "
               f"{seen[m].float().mean():>9.0%} {(max_ball[m] / speeds[m]).mean():>10.2f}")

@@ -53,7 +53,8 @@ if not ckpts:
 import gymnasium as gym
 
 import envs.golf
-from envs.golf.golfer import CLUB_BODY, GOLFER_USD
+from envs.golf.golf_env_cfg import MPH
+from envs.golf.golfer import CLUB_BODY
 from envs.golf.shapes import body_shapes
 from isaaclab.utils.math import quat_apply
 from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper, check_rsl_rl_version, create_rsl_rl_runner
@@ -107,7 +108,7 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
     runner = create_rsl_rl_runner(env, agent_cfg)
 
     # every shape as body-local points; the viewer only gets world points
-    shapes = body_shapes(GOLFER_USD)
+    shapes = body_shapes(u.cfg.scene.robot.spawn.usd_path)
     names = u.robot.body_names
     local, owner, prims = [], [], []
 
@@ -151,6 +152,7 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
         alive = torch.ones(N, dtype=torch.bool, device=u.device)
         smash = torch.zeros(N, device=u.device)  # 0 if no strike
         backwards = torch.zeros(N, dtype=torch.bool, device=u.device)
+        impact = torch.zeros(N, 3, device=u.device)  # club speed, lead hand speed, time since address
 
         # reset inside inference mode too, or the next checkpoint's reset fails
         with torch.inference_mode():
@@ -181,6 +183,8 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
                     smash = torch.where(alive, torch.maximum(smash, u.smash), smash)
                 if hasattr(u, "backwards"):
                     backwards |= alive & u.backwards
+                now = torch.stack([u.impact_speed, u.impact_hand_speed, u.impact_time], dim=-1)
+                impact = torch.where(alive[:, None], now, impact)
                 sc[alive, t, :6] = row[alive]
                 length += alive.long()
                 if t == T - 1:
@@ -239,6 +243,9 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
             "struck_by": {b: swung.count(b) for b in sorted(set(swung), key=swung.count, reverse=True)},
             "mean_paid_ball_speed": paid.mean().item(),
             "mean_smash": smash[smash > 0].mean().item() if (smash > 0).any() else 0.0,
+            "mean_impact_club_speed": impact[hit, 0].mean().item() if hit.any() else 0.0,
+            "mean_impact_hand_speed": impact[hit, 1].mean().item() if hit.any() else 0.0,
+            "mean_impact_time": impact[hit, 2].mean().item() if hit.any() else 0.0,
             "backwards_rate": backwards.float().mean().item(),
             "fell_rate": fell.float().mean().item(),
             "mean_max_ball_speed": max_ball.mean().item(),
@@ -250,14 +257,19 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
         }
         print(
             f"[{ckpt.stem}] contact {summary['contact_rate']:.0%}  fell {summary['fell_rate']:.0%}  "
-            f"ball {summary['mean_max_ball_speed']:.2f} m/s (best {summary['best_ball_speed']:.2f})  "
-            f"club {summary['mean_max_club_speed']:.2f} m/s  closest {summary['mean_min_dist']:.3f} m  "
+            f"ball {MPH * summary['mean_max_ball_speed']:.1f} mph (best {MPH * summary['best_ball_speed']:.1f})  "
+            f"club {MPH * summary['mean_max_club_speed']:.1f} mph  closest {summary['mean_min_dist']:.3f} m  "
             f"return {summary['mean_return']:.1f}  action std {summary['action_std']:.2f}"
         )
         print(
-            f"    paid ball speed {summary['mean_paid_ball_speed']:.2f} m/s  smash {summary['mean_smash']:.2f}  "
+            f"    paid ball speed {MPH * summary['mean_paid_ball_speed']:.1f} mph  smash {summary['mean_smash']:.2f}  "
             f"touched before backswing "
             f"{summary['pre_arm_touch_rate']:.0%}  struck after backswing by: {summary['struck_by'] or 'nothing'}"
+        )
+        print(
+            f"    at impact: club {MPH * summary['mean_impact_club_speed']:.1f} mph  "
+            f"lead hand {MPH * summary['mean_impact_hand_speed']:.1f} mph  "
+            f"{summary['mean_impact_time']:.2f} s after address"
         )
 
         episodes = []
@@ -271,6 +283,7 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
                     "maxClub": max_club[i].item(), "minDist": min_dist[i].item(),
                     "fell": bool(fell[i]), "ret": ret[i].item(), "paid": paid[i].item(), "struck": struck[i],
                     "smash": smash[i].item(), "backwards": bool(backwards[i]),
+                    "impactClub": impact[i, 0].item(), "impactHand": impact[i, 1].item(), "impactTime": impact[i, 2].item(),
                     "pts": pack(mm), "sc": pack(sc[i, :L].float()),
                 }
             )

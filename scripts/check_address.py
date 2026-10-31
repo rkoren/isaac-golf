@@ -22,7 +22,6 @@ sys.argv = [sys.argv[0]] + [a for a in extra if "=" in a and not a.startswith("-
 import gymnasium as gym
 
 import envs.golf
-from envs.golf.golfer import GOLFER_USD
 from envs.golf.shapes import capsule_table, collision_pairs, penetrations
 from isaaclab.utils.math import quat_apply
 from isaaclab_tasks.utils import resolve_task_config
@@ -58,8 +57,8 @@ def report(u, label: str) -> None:
 
 
 def overlaps(u) -> list[tuple[float, str, str]]:
-    local, owner, caps = capsule_table(GOLFER_USD, u.robot.body_names)
-    pairs = collision_pairs(GOLFER_USD, caps)
+    local, owner, caps = capsule_table(u.cfg.scene.robot.spawn.usd_path, u.robot.body_names)
+    pairs = collision_pairs(u.cfg.scene.robot.spawn.usd_path, caps)
     owner_t = torch.tensor(owner, device=u.device)
     local_t = torch.tensor(local, dtype=torch.float32, device=u.device)
     world = u.robot.data.body_link_pos_w.torch[0, owner_t] + quat_apply(

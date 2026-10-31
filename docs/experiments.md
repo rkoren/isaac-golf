@@ -2,6 +2,8 @@
 
 One row per run. No logged config/result = didn't happen.
 
+Clubhead and ball speeds are in **mph** (the env runs in m/s; TensorBoard logged `Metrics/*_speed` in m/s until 2026-10-30, now `Metrics/*_speed_mph`).
+
 ## Phase 0 — setup sanity (2026-10-24)
 
 Stock Isaac Lab tasks, no golf code yet. Purpose: prove the stack trains headless on this box.
@@ -37,14 +39,14 @@ All runs 1024 envs, rsl_rl PPO, `physics=isaacsim_physx`.
 | # | Iters | s/iter | env-steps/s | Reward first -> last | contact_rate | ball speed | Verdict |
 |---|---|---|---|---|---|---|---|
 | 1 | 100 | 1.08 | ~30k | **-1.2 -> -6.0** | 1.0 (meaningless) | 0 | **failed by design** — see below |
-| 2 | 150 | 1.11 | ~30k | **+2.6 -> +6.7** | 0.0 -> 0.17 (spiky) | 1.0 -> 2.22 m/s | climbs, but by *poking* |
-| 3 | 200 | 1.11 | ~30k | **+0.06 -> +6.05** (x100) | max 0.50, mean ~0.04 | 1.14 -> 2.42 m/s | ball reward gated on arming |
+| 2 | 150 | 1.11 | ~30k | **+2.6 -> +6.7** | 0.0 -> 0.17 (spiky) | 2.2 -> 5.0 mph | climbs, but by *poking* |
+| 3 | 200 | 1.11 | ~30k | **+0.06 -> +6.05** (x100) | max 0.50, mean ~0.04 | 2.6 -> 5.4 mph | ball reward gated on arming |
 
 **Run 1 — the instructive failure.** Stage 0 as originally written in CLAUDE.md (potential-based
 clubhead-to-ball distance) *trains the policy to stand still*. The club starts at address ~6 cm
 from the ball, so there is no distance to close, and any motion is punished twice: the approach
 term goes negative and the energy penalty bites. Measured: `Reward/approach` pinned at -0.99,
-`Metrics/clubhead_speed` fell 5.9 -> 3.2 m/s, reward fell to -6.0. The optimum of that reward
+`Metrics/clubhead_speed` fell 13.2 -> 7.2 mph, reward fell to -6.0. The optimum of that reward
 function is a statue. `contact_rate` also read 1.0 from iteration 0 — proximity alone, with the
 head already inside the impact radius, measures nothing.
 
@@ -59,8 +61,8 @@ the policy had found that *poking the ball from address* pays, and never swung. 
 reward is now multiplied by `armed`, so only a strike that backswung first earns anything.
 Reward restarts near zero (the easy exploit is worth nothing) and then climbs 100x. Where it
 comes from matters: `Reward/ball_speed` (the gated term) went 0.43 -> 2.83 and `Metrics/impact_speed`
-0.055 -> 0.267 with a 3.67 m/s peak, so genuine armed strikes are happening and getting faster.
-Clubhead speed now *rises* (5.20 -> 5.51 m/s) where in run 1 it fell to 3.2.
+0.12 -> 0.60 mph with an 8.2 mph peak, so genuine armed strikes are happening and getting faster.
+Clubhead speed now *rises* (11.6 -> 12.3 mph) where in run 1 it fell to 7.2.
 
 | run 3 term | first 10 | last 10 |
 |---|---|---|
@@ -93,9 +95,9 @@ what `Reward/ball_speed` pays.
 
 | ckpt | detector contact | struck by clubhead | struck by body | knocked at reset | paid ball speed | max ball speed | fell |
 |---|---|---|---|---|---|---|---|
-| model_0 | 3% | 1/64 | 0/64 | 17/64 | 0.15 m/s | 1.05 m/s | 100% |
-| model_100 | 2% | 1/64 | 27/64 | 12/64 | 1.29 m/s | 1.88 m/s | 100% |
-| model_199 | 2% | 1/64 | **47/64** | 8/64 | 3.90 m/s | 4.59 m/s | 100% |
+| model_0 | 3% | 1/64 | 0/64 | 17/64 | 0.34 mph | 2.3 mph | 100% |
+| model_100 | 2% | 1/64 | 27/64 | 12/64 | 2.9 mph | 4.2 mph | 100% |
+| model_199 | 2% | 1/64 | **47/64** | 8/64 | 8.7 mph | 10.3 mph | 100% |
 
 At model_199 the armed strikes were left shin ×32, left foot ×13, shaft ×4, clubhead ×1, right leg ×2.
 The run 3 write-up read the climbing `Reward/ball_speed` as "genuine armed strikes getting faster":
@@ -104,7 +106,7 @@ contact gate), falls, and sweeps the ball with its lead leg from the ground.
 
 Also found while watching:
 - **Reset knock.** In 1 of every 4–8 resets the clubhead starts touching the ball (address leaves ~4 cm,
-  ±0.05 rad joint jitter closes it). PhysX pushes them apart and launches the ball, up to 22 m/s, on
+  ±0.05 rad joint jitter closes it). PhysX pushes them apart and launches the ball, up to 49 mph, on
   frame 1. It pays nothing (unarmed), but it inflates `Metrics/ball_speed` and wastes the episode:
   the ball is gone and `max_ball_speed` starts high.
 - **Address faces −Y, not +X.** Shoulder and hip lines run along X, head leans −Y of the pelvis, ball
@@ -152,7 +154,7 @@ speed counted as zero.
 **CCD.** Sweep CCD is CPU-only, so PhysX GPU drops `enable_ccd` (removed). Centre strikes, face
 first, % that PhysX registers (ball leaves at > ⅓ club speed):
 
-| config | ≤5 m/s | 10–15 | 15–20 | 25–30 | 35–40 | near miss, 2 / 5 cm clear |
+| config | ≤11 mph | 22–34 | 34–45 | 56–67 | 78–89 | near miss, 2 / 5 cm clear |
 |---|---|---|---|---|---|---|
 | 120 Hz (current) | 100% | 38% | 22% | 0% | 0% | — |
 | 120 Hz + speculative CCD on club | identical to the row above (no effect on GPU articulation links) | | | | | |
@@ -173,7 +175,7 @@ reads lower than earlier runs for the same motion.
 
 Also found, not changed: the implicit actuators pull every joint toward **joint zero** (the stock
 standing pose) with 10–20 N·m/rad, not toward the address. With zero action and gravity off the
-clubhead leaves address at 2–7 m/s on the first step. The policy has been fighting this spring.
+clubhead leaves address at 4–16 mph on the first step. The policy has been fighting this spring.
 
 **Takeaways**
 - A quaternion-order mix-up doesn't crash. It quietly made the right answer unreachable, and the
@@ -190,13 +192,13 @@ probe at 480 Hz (decimation 8): **2.94 s/iter**, 2.5× slower.
 
 | | reward first → last 10 | contact (detector) | struck by clubhead | struck by body | touched before backswing | paid ball speed | fell |
 |---|---|---|---|---|---|---|---|
-| run 3, model_199 (old env) | +0.06 → +6.05 | 2% | 1/64 | 47/64 | 8/64 knocked off | 3.90 m/s | 100% |
-| **fixed, model_99** | +1.3 → +4.9 | **78%** | **33/64** | 1/64 | 2/64 (held, harmless) | 2.47 m/s | 89% |
+| run 3, model_199 (old env) | +0.06 → +6.05 | 2% | 1/64 | 47/64 | 8/64 knocked off | 8.7 mph | 100% |
+| **fixed, model_99** | +1.3 → +4.9 | **78%** | **33/64** | 1/64 | 2/64 (held, harmless) | 5.5 mph | 89% |
 
 The kicking all but vanished **without touching the reward**: with the ball in front of the face
 instead of beside the lead leg, and no reset fling, the club became the easiest thing to hit it
 with. Paid ball speed is lower than run 3's because these are real strikes, and at 120 Hz PhysX
-registers only some of them at these 10–15 m/s head speeds. Strikes currently send the ball
+registers only some of them at these 22–34 mph head speeds. Strikes currently send the ball
 toward **−Y**, away from the target: arming accepts 25 cm in any direction, so the policy winds up
 toward the target and swings back through. Stage 0 doesn't pay direction; Stage 3 will.
 
@@ -224,7 +226,7 @@ head's box grown by its radius and the head moving into it. Then:
 
 | strike | registered | smash measured | model |
 |---|---|---|---|
-| centre | 100% at 5–50 m/s | 1.45–1.47 | 1.47 |
+| centre | 100% at 11–112 mph | 1.45–1.47 | 1.47 |
 | 1 cm toe | 100% | 1.37 | 1.38 |
 | 2 cm toe | 100% | 1.20 | 1.20 |
 | 9 cm wide of the head | 0% | — | miss |
@@ -233,14 +235,14 @@ head's box grown by its radius and the head moving into it. Then:
 
 `logs/rsl_rl/golf_swing/2026-10-30_00-02-32_smash`: Stage 0 reward unchanged, 1024 envs, 300 iters,
 PhysX 120 Hz, **1.09 s/iter**. Training: reward −0.4 → **+50**, `contact_rate` 0.02 → **0.99**,
-`Metrics/ball_speed` 0.02 → 12.2 m/s, `Metrics/impact_speed` → 16.8 m/s.
+`Metrics/ball_speed` 0.04 → 27.3 mph, `Metrics/impact_speed` → 37.6 mph.
 
 | checkpoint (64 rollouts, mean actions) | contact | clubhead strikes | smash | paid ball speed | clubhead | fell |
 |---|---|---|---|---|---|---|
-| model_0 | 0% | 0% | — | 0 | 8.3 m/s | 100% |
-| model_100 | 45% | 45% | 1.00 | 1.2 m/s | 5.8 m/s | 100% |
-| model_200 | 100% | 89% | 1.09 | 16.4 m/s | 17.2 m/s | 100% |
-| model_299 | **100%** | **100%** | 1.13 | **19.8 m/s** | 19.5 m/s | 70% |
+| model_0 | 0% | 0% | — | 0 | 18.6 mph | 100% |
+| model_100 | 45% | 45% | 1.00 | 2.7 mph | 13.0 mph | 100% |
+| model_200 | 100% | 89% | 1.09 | 36.7 mph | 38.5 mph | 100% |
+| model_299 | **100%** | **100%** | 1.13 | **44.3 mph** | 43.6 mph | 70% |
 
 **The ball goes toward the target now, with no direction reward.** At model_299 every strike leaves
 2–10° left of the target line (run "fixes_120hz" sent it backwards). The smash model did it: the
@@ -270,9 +272,9 @@ torso below 0.95 m and feet sliding > 3 cm, 10 per m per second; post-impact fin
 
 | run | setup | contact | ball speed | clubhead | smash | fell | ball heads |
 |---|---|---|---|---|---|---|---|
-| 5 `athletic` | balance on **from scratch** | 0% | — | 5.8 m/s | — | 6% | — |
-| 6 `athletic_strike` | balance off, 300 iters | 100% | 18.6 m/s | 21.5 m/s | 1.00 | 100% | −174° (backwards) |
-| 7 `athletic_balance` | resumed from 6, balance on, 300 iters | 100% | **30.2 m/s** | **31.8 m/s** | 1.00 | 98% | −164° (backwards) |
+| 5 `athletic` | balance on **from scratch** | 0% | — | 13.0 mph | — | 6% | — |
+| 6 `athletic_strike` | balance off, 300 iters | 100% | 41.6 mph | 48.1 mph | 1.00 | 100% | −174° (backwards) |
+| 7 `athletic_balance` | resumed from 6, balance on, 300 iters | 100% | **67.6 mph** | **71.1 mph** | 1.00 | 98% | −164° (backwards) |
 
 (64 rollouts at each run's last checkpoint, mean actions.)
 
@@ -281,7 +283,7 @@ untrained policy falls) dwarfs the rare strike, so the policy learned to stand s
 off by default now and only switched on when resuming from a striking checkpoint.
 
 **Run 7 swung harder instead of staying up.** At weight 10 a fall costs ~5 per episode and a
-30 m/s strike pays ~90, so falling is worth it; torso height during training only went 0.48 → 0.55 m.
+67 mph strike pays ~90 (reward is 3 per m/s), so falling is worth it; torso height during training only went 0.48 → 0.55 m.
 
 **Runs 6 and 7 strike backhanded** (smash exactly 1.00, ball backwards). Run 4's face-first swing
 was a lucky draw, not something the smash floor reliably produces: the backhand basin is just as
@@ -300,11 +302,79 @@ Strike stage from scratch (balance off), 300 iters, two seeds:
 
 | run | backwards (training, first → last) | contact | smash | ball speed | heading | fell |
 |---|---|---|---|---|---|---|
-| 8 `nobackwards_s1` | 43% → 0% | 100% | 1.15 | 23.2 m/s | +16° (13 to 17) | 98% |
-| 9 `nobackwards_s2` | 38% → 0% | 100% | 1.17 | 27.0 m/s | +20° (15 to 22) | 100% |
+| 8 `nobackwards_s1` | 43% → 0% | 100% | 1.15 | 51.9 mph | +16° (13 to 17) | 98% |
+| 9 `nobackwards_s2` | 38% → 0% | 100% | 1.17 | 60.4 mph | +20° (15 to 22) | 100% |
 
 (last checkpoint, 64 rollouts, mean actions; heading + is right of target for this right-hander)
 
 Both seeds abandon the backhand and strike face-first, forward, so this holds where run 4's
 direction didn't. Strikes are a consistent ~18° push: Stage 3's direction term is what tightens
 that. Balance is the next stage, resumed from run 9.
+
+## Fuller swing vs hold the finish (2026-10-30)
+
+Watching run 9: the strike lands 0.13–0.15 s after address with the torso still at 1.15 m. It is
+a jab, not a swing, and the fall comes entirely after impact. So posture-at-impact gating would
+change nothing. Two nudges, each resumed from run 9 for 300 iters (balance penalties off):
+
+| run | change | contact | smash | ball speed | clubhead | fell | torso at finish |
+|---|---|---|---|---|---|---|---|
+| 9 (start) | — | 100% | 1.17 | 60.4 mph | 58.8 mph | 100% | ~0.15 m |
+| 10 `fullswing` | strike counts only after a 1.0 m backswing (`impact_arm_dist` 0.25 → 1.0, `backswing_cap` 0.6 → 1.2) | 100% | 1.10 | 82.3 mph | **77.4 mph** | 97% | 0.25 m |
+| 11 `holdfinish` | half the ball pay held until the end of the 1 s finish, × posture (`finish_frac=0.5`) | 100% | **1.28** | **83.0 mph** | 69.1 mph | **0%** | 0.74 m |
+
+- Run 10: a longer arc buys head speed (58 → 78 mph), and the swing takes a bit longer (impact at 0.22 s). Still falls.
+- Run 11: tying a slice of the *dominant* reward to the finish did what the side penalties
+  (run 7) couldn't: no falls, and strikes got more centred (smash 1.17 → 1.28). It finishes crouched.
+
+**Takeaway**
+- To change behaviour after the payout, make part of the payout depend on it. A penalty that's
+  small next to the reward gets traded away; a deferred share of the reward doesn't.
+
+## Clubs, and both nudges together (2026-10-30)
+
+Clubs: `envs/golf/clubs.py` (driver, 7iron, pw), one asset and one solved address each. Shorter
+clubs stand closer: ball 0.82 / 0.62 / 0.57 m from the feet, stance 0.40 / 0.34 / 0.30 m, spine
+tilt 29° / 35° / 35°, 0 overlaps. Heads are visual meshes (460cc-style driver, lofted blades);
+the strike still uses each club's box collider. Iron heads sit ~2 cm above target height, so
+irons get a short tee. Kit clips are now filmed down the line.
+
+| run | setup | contact | smash | ball speed | clubhead | fell | heading |
+|---|---|---|---|---|---|---|---|
+| 12 `driver_full_finish` | resumed from 11, both nudges | 100% | 1.17 | **86.3 mph** | 80.3 mph | 5% (but kneels: torso 0.73 m at finish) | +31° |
+| 13 `7iron_from_driver` | 7-iron warm-started from 11's driver policy | **0%** | — | — | — | — | — |
+| 14 → 15 `7iron_full_finish` | 7-iron strike stage from scratch (seed 2), then both nudges | 100% | 1.08 | 93.3 mph | 91.9 mph | 100% | −8° |
+
+- Run 12 is the best driver swing yet: fuller (impact 0.21 s after address), faster, and mostly upright,
+  though it finishes kneeling. The push grew (+21° → +31°); Stage 3's direction term owns that.
+- Run 13: a driver policy does not transfer to an iron address (different pose, ball 20 cm closer).
+  Contact never came back. Train each club's curriculum fresh.
+- Run 15: the iron learned to strike hard and roughly straight, but with both nudges applied to a policy
+  that already fell, it chose flat-out speed (92 mph head, faster than the driver) over the finish
+  share. Applying the finish first, then the full backswing (the order that worked for the driver), is next.
+
+## Speed audit: faster than a human (2026-10-30)
+
+Run 15's 7-iron head speed (92 mph, above the ~90 mph Tour 7-iron average) on a swing that isn't full
+was suspicious. Rolled out both final policies (64 episodes, mean actions) with the new at-impact metrics:
+
+| run | clubhead at impact | lead hand at impact | address to impact | club / hand |
+|---|---|---|---|---|
+| 12 driver | 77.3 mph | 23.4 mph | 0.21 s | 3.3 |
+| 15 7-iron | 90.9 mph | **35.5 mph** | 0.27 s | 2.6 |
+| real golfers, for scale | 7-iron ~75–90, driver ~90–115 | ~20 mph | ~1 s takeaway to impact | ~4–5 (wrist release) |
+
+- The speed is real at impact, not a post-impact flail: the episode max is the impact frame in most
+  swings, with the torso still upright.
+- The body producing it isn't human. With no wrists the club can't out-run the hands the way a
+  released wrist does, so head speed has to come from hands moving far faster than a person's, and
+  the whole swing takes as long as a real downswing alone. The torso also lunges at ~8 mph.
+- Why it can: the actuators give full torque (shoulders 67.5 N·m per axis, elbows 45) at any joint speed
+  up to 100 rad/s. Muscles lose torque as they speed up, and nothing models that.
+- 11 of 12 recorded 7-iron strikes are attributed to the shaft, with smash ~1.0–1.2: heel strikes
+  next to the hosel. The detector still counts them as head strikes (the ball overlaps the box).
+
+Now logged per strike: TensorBoard `Metrics/impact_speed_mph` (strikes only; it used to average in
+zeros for misses), `Metrics/impact_hand_speed_mph`, `Metrics/impact_time`; also in `record_swings.py`,
+the viewer and `media/index.md`. Candidate fix, not yet tried: a torque–speed curve (Isaac Lab
+`DCMotorCfg`), or a hand-speed cap in the reward.

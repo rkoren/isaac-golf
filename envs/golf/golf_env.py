@@ -11,8 +11,8 @@ from isaaclab.utils import index_fill_
 from isaaclab.utils.math import normalize, quat_apply, quat_apply_inverse, sample_uniform, scale_transform
 from isaaclab.utils.string import resolve_matching_names_values
 
-from .golf_env_cfg import GolfEnvCfg
-from .golfer import CLUB_BODY, GOLFER_USD, LEAD_HAND, TRAIL_HAND
+from .golf_env_cfg import MPH, GolfEnvCfg, apply_club
+from .golfer import CLUB_BODY, LEAD_HAND, TRAIL_HAND
 from .shapes import body_shapes
 
 
@@ -20,6 +20,7 @@ class GolfEnv(DirectRLEnv):
     cfg: GolfEnvCfg
 
     def __init__(self, cfg: GolfEnvCfg, render_mode: str | None = None, **kwargs):
+        apply_club(cfg)  # here, not in the cfg, so an env.club= override takes effect
         super().__init__(cfg, render_mode, **kwargs)
 
         self.robot, self.ball = self.scene["robot"], self.scene["ball"]
@@ -44,6 +45,8 @@ class GolfEnv(DirectRLEnv):
         self.post_impact = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self.min_dist = torch.full((self.num_envs,), 1e3, device=self.device)
         self.impact_speed = torch.zeros(self.num_envs, device=self.device)
+        self.impact_hand_speed = torch.zeros(self.num_envs, device=self.device)
+        self.impact_time = torch.zeros(self.num_envs, device=self.device)
         self.armed = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self.backswing = torch.zeros(self.num_envs, device=self.device)
         self.max_ball_speed = torch.zeros(self.num_envs, device=self.device)
@@ -52,7 +55,7 @@ class GolfEnv(DirectRLEnv):
         self.backwards = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self.new_hit = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
-        box = next(s for s in body_shapes(GOLFER_USD)[CLUB_BODY] if s[0] == "box")
+        box = next(s for s in body_shapes(self.cfg.scene.robot.spawn.usd_path)[CLUB_BODY] if s[0] == "box")
         self.head_half = torch.tensor(
             [abs(box[2 + i][i] - box[1][i]) for i in range(3)], dtype=torch.float32, device=self.device
         )
@@ -160,6 +163,9 @@ class GolfEnv(DirectRLEnv):
 
         self.armed |= self.club_ball_dist > self.cfg.impact_arm_dist
         self.impact_speed = torch.where(hit, self.club_speed, self.impact_speed)
+        hand_speed = torch.linalg.norm(self.robot.data.body_link_lin_vel_w.torch[:, self._lead_idx], dim=-1)
+        self.impact_hand_speed = torch.where(hit, hand_speed, self.impact_hand_speed)
+        self.impact_time = torch.where(hit, self.episode_length_buf * self.step_dt, self.impact_time)
         self.impacted |= hit
         self.post_impact += self.impacted.long()
         self.min_dist = torch.minimum(self.min_dist, swept_dist)
@@ -193,6 +199,12 @@ class GolfEnv(DirectRLEnv):
         gained = torch.relu(ball_speed - self.max_ball_speed)
         self.max_ball_speed = torch.maximum(self.max_ball_speed, ball_speed)
         ball_reward = self.cfg.ball_speed_weight * gained / self.step_dt
+        # hold the finish: part of the payout waits for the end of the finish, scaled by posture
+        frac = self.cfg.finish_frac
+        finishing = (self.post_impact == self.cfg.post_impact_steps + 1).float()
+        upright = torch.clamp((self.torso_pos[:, 2] - 0.6) / 0.4, 0.0, 1.0)
+        finish = self.cfg.ball_speed_weight * frac * ball_speed * upright * finishing / self.step_dt
+        ball_reward = (1.0 - frac) * ball_reward + finish
 
         # 2. wind up, capped
         capped = torch.clamp(self.club_ball_dist, max=self.cfg.backswing_cap)
@@ -226,6 +238,7 @@ class GolfEnv(DirectRLEnv):
         # log terms separately
         log = self.extras.setdefault("log", {})
         log["Reward/ball_speed"] = ball_reward.mean()
+        log["Reward/finish"] = finish.mean()
         log["Reward/backswing"] = wind.mean()
         log["Reward/clubhead_speed"] = speed.mean()
         log["Reward/trail_hand"] = -trail.mean()
@@ -234,8 +247,8 @@ class GolfEnv(DirectRLEnv):
         log["Reward/backwards"] = -backwards.mean()
         log["Metrics/torso_height"] = self.torso_pos[:, 2].mean()
         log["Metrics/club_ball_dist"] = self.club_ball_dist.mean()
-        log["Metrics/clubhead_speed"] = self.club_speed.mean()
-        log["Metrics/ball_speed"] = ball_speed.mean()
+        log["Metrics/clubhead_speed_mph"] = MPH * self.club_speed.mean()
+        log["Metrics/ball_speed_mph"] = MPH * ball_speed.mean()
 
         # per-second terms, scaled by step_dt
         return self.step_dt * (
@@ -268,9 +281,12 @@ class GolfEnv(DirectRLEnv):
         log = self.extras.setdefault("log", {})
         log["Metrics/contact_rate"] = self.impacted[env_ids].float().mean()
         log["Metrics/min_club_ball_dist"] = self.min_dist[env_ids].mean()
-        log["Metrics/impact_speed"] = self.impact_speed[env_ids].mean()
         struck = self.impacted[env_ids]
         if struck.any():
+            # at the strike: human-plausibility checks
+            log["Metrics/impact_speed_mph"] = MPH * self.impact_speed[env_ids][struck].mean()
+            log["Metrics/impact_hand_speed_mph"] = MPH * self.impact_hand_speed[env_ids][struck].mean()
+            log["Metrics/impact_time"] = self.impact_time[env_ids][struck].mean()
             log["Metrics/smash"] = self.smash[env_ids][struck].mean()
             log["Metrics/backwards_rate"] = self.backwards[env_ids][struck].float().mean()
 
@@ -280,6 +296,8 @@ class GolfEnv(DirectRLEnv):
         index_fill_(self.post_impact, env_ids, 0)
         index_fill_(self.min_dist, env_ids, 1e3)
         index_fill_(self.impact_speed, env_ids, 0.0)
+        index_fill_(self.impact_hand_speed, env_ids, 0.0)
+        index_fill_(self.impact_time, env_ids, 0.0)
         index_fill_(self.armed, env_ids, False)
         index_fill_(self.backswing, env_ids, 0.0)
         index_fill_(self.max_ball_speed, env_ids, 0.0)

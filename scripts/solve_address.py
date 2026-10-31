@@ -7,13 +7,14 @@ The body's rigid translation is free (we choose root pos at reset), so we do NOT
 we drop the pose until the feet touch the ground and recentre it on the feet. The ball is an
 OUTPUT too -- a golfer addresses the ball wherever the club naturally sits.
 
-Prints root pose, joint angles and ball position to paste into envs/golf/.
+Writes envs/golf/address/<club>.json: root pose, joints, ball position, weld.
 """
 
 from __future__ import annotations
 
 import argparse
 import contextlib
+import json
 import math
 import sys
 
@@ -26,12 +27,8 @@ ap.add_argument("--task", default="Isaac-Golf-Swing-Direct")
 ap.add_argument("--num_envs", type=int, default=4096)
 ap.add_argument("--iters", type=int, default=40)
 ap.add_argument("--elite", type=float, default=0.03)
-ap.add_argument("--ball_z", type=float, default=0.05, help="teed ball centre height")
-ap.add_argument("--hand_x", type=float, default=0.25, help="lead hand in front of the feet")
-ap.add_argument("--hand_z", type=float, default=0.72, help="lead hand height at address")
-ap.add_argument("--shaft_deg", type=float, default=42.0, help="shaft angle from vertical")
+ap.add_argument("--club", default="driver", help="key into envs/golf/clubs.py")
 ap.add_argument("--ball_gap", type=float, default=0.02, help="air between clubface and ball at address [m]")
-ap.add_argument("--stance", type=float, default=0.40, help="ankle to ankle along the target line [m]")
 ap.add_argument("--knee_deg", type=float, default=25.0, help="knee flex at address")
 add_launcher_args(ap)
 args, extra = ap.parse_known_args()
@@ -43,7 +40,7 @@ torch.manual_seed(0)
 
 import envs.golf
 from envs.golf.golf_env_cfg import BALL_R
-from envs.golf.golfer import GOLFER_USD
+from envs.golf.clubs import ADDRESS_DIR, CLUBS, golfer_usd
 from envs.golf.shapes import capsule_table, collision_pairs, penetrations
 from isaaclab.utils.math import quat_apply
 from isaaclab_tasks.utils import resolve_task_config
@@ -73,9 +70,11 @@ SEARCH = [
 ]
  
 EVAL_Z = 5.0
-HEAD_DEPTH = 0.04
+club = CLUBS[args.club]
+GOLFER_USD = golfer_usd(args.club)
 
 env_cfg, _ = resolve_task_config(args.task, "")
+env_cfg.club = args.club
 env_cfg.scene.num_envs = args.num_envs
 env_cfg.sim.gravity = (0.0, 0.0, 0.0)
 
@@ -116,8 +115,10 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
     hi = torch.tensor([s[2] for s in SEARCH], device=dev)
     mean, std = (lo + hi) / 2, (hi - lo) / 4
     origins = u.scene.env_origins
-    hand_target = torch.tensor([args.hand_x, 0.0, args.hand_z], device=dev)
-    GRIP_Z = 0.85           # club-frame z held by the hand, see make_golfer_asset.py
+    # hands high enough that the shaft angle puts the head at its address height
+    th = math.radians(club.shaft_deg)
+    hand_target = torch.tensor([club.hand_x, 0.0, club.head_z + club.grip * math.cos(th)], device=dev)
+    GRIP_Z = club.grip
     TARGET_DIR = torch.tensor([0.0, 1.0, 0.0], device=dev)   # right-hander hits to its left
 
     def quat_from_rotvec(v: torch.Tensor) -> torch.Tensor:
@@ -164,7 +165,7 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
             toe = f[:, 1::2, :2] - f[:, 0::2, :2]
             cost += 2.0 * (1.0 - (toe[..., 0].abs() / torch.linalg.norm(toe, dim=-1).clamp_min(1e-6))).sum(-1)
         # athletic: feet wide and square, knees soft, weight over the middle of the feet
-        cost += 20.0 * ((lf[:, 1] - rf[:, 1]) - args.stance) ** 2 + 10.0 * (lf[:, 0] - rf[:, 0]) ** 2
+        cost += 20.0 * ((lf[:, 1] - rf[:, 1]) - club.stance) ** 2 + 10.0 * (lf[:, 0] - rf[:, 0]) ** 2
         for hip, knee, foot in ((lhip_i, lkn_i, lf_i), (rhip_i, rkn_i, rf_i)):
             flex = torch.arccos(torch.nn.functional.cosine_similarity(
                 p[:, knee] - p[:, hip], p[:, foot] - p[:, knee], dim=-1).clamp(-1.0, 1.0))
@@ -201,10 +202,9 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
     root_quat = quat_from_rotvec(mean[:ROT_DIMS].unsqueeze(0))[0]
     hand_q = u.robot.data.body_link_quat_w.torch[0, u._lead_idx]
 
-    th = math.radians(args.shaft_deg)
     shaft_dir = torch.tensor([math.sin(th), 0.0, -math.cos(th)], device=dev)
     clubhead = lead + GRIP_Z * shaft_dir
-    ball = clubhead + (HEAD_DEPTH / 2 + BALL_R + args.ball_gap) * TARGET_DIR
+    ball = clubhead + (club.head_size[0] / 2 + BALL_R + args.ball_gap) * TARGET_DIR
 
     from isaaclab.utils.math import matrix_from_quat
 
@@ -228,22 +228,17 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
     print(f"final cost {cost[0].item():.5f}")
     print(f"hand->clubhead distance {torch.linalg.norm(d).item():.4f} m   (club grip length {GRIP_Z})")
     print(f"clubhead->ball {torch.linalg.norm(ball - clubhead).item():.4f} m   (face gap {args.ball_gap} m)")
-    print()
-    print("# --- paste into envs/golf/golfer.py ---")
     # full shift incl. x/y: score() recentred the feet on the origin
-    print(f"    pos=({shift[0, 0].item():.3f}, {shift[0, 1].item():.3f}, {EVAL_Z + shift[0, 2].item():.3f}),")
-    print(f"    rot=({root_quat[0]:.4f}, {root_quat[1]:.4f}, {root_quat[2]:.4f}, {root_quat[3]:.4f}),")
-    print("ADDRESS_JOINT_POS = {")
-    for name, val in zip(names, mean[ROT_DIMS:].tolist()):
-        print(f'    "{name}": {val:.3f},')
-    print("}")
-    print()
-    print("# --- paste into scripts/make_golfer_asset.py ---")
-    print(f"WELD_ROT = ({q[0]:.5f}, {q[1]:.5f}, {q[2]:.5f}, {q[3]:.5f})   # (w,x,y,z)")
-    print()
-    print("# --- paste into envs/golf/golf_env_cfg.py ---")
-    print(f"    ball_pos = ({ball[0]:.3f}, {ball[1]:.3f}, {ball[2]:.3f})")
-    print()
+    out = ADDRESS_DIR / f"{args.club}.json"
+    out.parent.mkdir(exist_ok=True)
+    out.write_text(json.dumps({
+        "root_pos": [round(shift[0, 0].item(), 3), round(shift[0, 1].item(), 3), round(EVAL_Z + shift[0, 2].item(), 3)],
+        "root_rot": [round(v, 4) for v in root_quat.tolist()],
+        "joint_pos": {n: round(v, 3) for n, v in zip(names, mean[ROT_DIMS:].tolist())},
+        "ball_pos": [round(v, 3) for v in ball.tolist()],
+        "weld_rot": [round(v, 5) for v in q.tolist()],
+    }, indent=2) + "\n")
+    print(f"\nwrote {out}; now rebuild the asset: uv run python scripts/make_golfer_asset.py --club {args.club}")
     print("resulting pose (env-local, after dropping to the ground):")
     for l_i, r_i, label in ((lsh_i, rsh_i, "shoulder"), (lhip_i, rhip_i, "hip")):
         lat = p[0, l_i] - p[0, r_i]

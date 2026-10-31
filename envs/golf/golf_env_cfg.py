@@ -16,13 +16,15 @@ from isaaclab.visualizers import VisualizerCfg
 from isaaclab_tasks.core.locomotion.humanoid.humanoid_common import JOINT_GEARS, TERRAIN_CFG
 from isaaclab_tasks.utils import PresetCfg
 
+from .clubs import CLUBS, address, golfer_usd
 from .golfer import GOLFER_CFG
 
 # golf ball
 BALL_R = 0.02134
 BALL_MASS = 0.0459
+MPH = 2.23694  # m/s -> mph, for reporting only
 
-BALL_POS = (0.817, 0.064, 0.091) # 2 cm from clubface
+BALL_POS = tuple(address("driver")["ball_pos"])  # 2 cm from clubface
 TEE_H = BALL_POS[2] - BALL_R   # tee
 
 GRASS = (0.30, 0.62, 0.22)
@@ -92,10 +94,10 @@ class GolfEnvCfg(DirectRLEnvCfg):
     observation_space = 81
     state_space = 0
 
-    # face-on camera for env 0 (--num_envs 1); base cfg so --video still injects its visualizer
+    # down-the-line camera for env 0 (--num_envs 1); base cfg so --video still injects its visualizer
     sim: SimulationCfg = SimulationCfg(
         dt=1 / 120, render_interval=decimation, physics=GolfPhysicsCfg(),
-        default_visualizer_cfg=VisualizerCfg(eye=(3.8, 0.3, 1.3), lookat=(0.4, 0.0, 0.8)),
+        default_visualizer_cfg=VisualizerCfg(eye=(0.45, -3.2, 1.4), lookat=(0.6, 1.5, 0.5)),
     )
 
     scene: GolfSceneCfg = GolfSceneCfg(
@@ -103,6 +105,7 @@ class GolfEnvCfg(DirectRLEnvCfg):
     )
 
     joint_gears: dict[str, float] = JOINT_GEARS
+    club: str = "driver"                # key into clubs.py; apply_club() sets everything club-specific
     ball_pos: tuple[float, float, float] = BALL_POS
     # aim based on golfer (left for a righty)
     target_dir: tuple[float, float, float] = (0.0, 1.0, 0.0)
@@ -142,8 +145,28 @@ class GolfEnvCfg(DirectRLEnvCfg):
     smash_sigma_high: float = 0.011     # [m] up-down falloff (face is half as tall)
     face_launch_weight: float = 0.85    # start direction: face vs path
     backwards_penalty: float = 20.0     # one-off: back of head or ball heading away from target
+    finish_frac: float = 0.0            # share of ball pay held until the finish, scaled by posture
 
     # obs scales
     dof_vel_scale: float = 0.1
     angular_velocity_scale: float = 0.25
     clubhead_vel_scale: float = 0.05
+
+
+def apply_club(cfg: GolfEnvCfg) -> None:
+    """Point the scene at cfg.club: golfer asset, address pose, ball, tee, smash ceiling."""
+    spec, addr = CLUBS[cfg.club], address(cfg.club)
+    robot = cfg.scene.robot
+    robot.spawn.usd_path = golfer_usd(cfg.club)
+    robot.init_state.pos = tuple(addr["root_pos"])
+    robot.init_state.rot = tuple(addr["root_rot"])
+    robot.init_state.joint_pos = addr["joint_pos"]
+    cfg.ball_pos = tuple(addr["ball_pos"])
+    cfg.scene.ball.init_state.pos = cfg.ball_pos
+    if spec.tee:
+        h = cfg.ball_pos[2] - BALL_R
+        cfg.scene.tee.spawn.height = h
+        cfg.scene.tee.init_state.pos = (cfg.ball_pos[0], cfg.ball_pos[1], h / 2)
+    else:
+        cfg.scene.tee = None
+    cfg.smash_max = spec.smash_max

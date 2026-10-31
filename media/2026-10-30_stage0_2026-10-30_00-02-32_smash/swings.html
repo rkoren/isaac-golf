@@ -4,8 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Swing viewer</title>
-<!-- template for scripts/record_swings.py, which swaps the data placeholder for recorded swings.
-     no dependencies: canvas 2d plus a tiny projection, so it opens offline from disk. -->
+<!-- template for scripts/record_swings.py; no dependencies, opens offline -->
 <style>
   :root {
     --bg: #111418; --panel: #181c22; --raise: #222934; --line: #262c35; --edge: #3d4757;
@@ -127,6 +126,7 @@ catch (e) {
 
 const M = DATA.meta, NP = DATA.nPts, BALL = NP - 1, NSC = 7;
 const SC = { club: 0, ball: 1, dist: 2, torso: 3, armed: 4, impacted: 5, reward: 6 };
+const MPH = 2.23694, mph = v => `${(v * MPH).toFixed(1)} mph`;  // data is m/s
 const COLORS = { core: "#e9a35b", lead: "#d9722f", trail: "#f4c590", shaft: "#cfd5dd", head: "#3a414d" };
 const OUTLINE = "rgba(40, 24, 10, .55)";
 const CLUB_HEAD = DATA.prims.find(p => p.k === "box" && p.part === "club");
@@ -143,6 +143,7 @@ const isClub = b => b === "clubhead" || b === "shaft";
 function strikeChip(e) {
   if (!e.struck) return '<span class="chip miss">untouched</span>';
   if (!e.struck.armed) return '<span class="chip knock" title="the club touched the ball before the backswing armed it: the tee hold puts it back and it pays nothing">early touch</span>';
+  if (e.backwards) return '<span class="chip fell">backwards</span>';
   return `<span class="chip ${isClub(e.struck.by) ? "hit" : "body"}">${partName(e.struck.by)}</span>`;
 }
 
@@ -170,7 +171,7 @@ const norm = a => { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / 
 // ---------- state ----------
 const st = {
   ck: DATA.checkpoints.length - 1, ep: 0, t: 0, acc: 0, hold: 0,
-  playing: true, speed: 0.25, trail: true, ghost: false, view: "face",
+  playing: true, speed: 0.25, trail: true, ghost: false, view: "dtl",
 };
 const cam = { yaw: 0, pitch: 0.15, dist: 4, target: [0.4, 0, 0.7], fov: 36 * Math.PI / 180 };
 const cur = () => decode(DATA.checkpoints[st.ck].episodes[st.ep]);
@@ -180,9 +181,7 @@ function centre(ep, t, keep) {
   DATA.prims.forEach(p => { if (keep(p)) pts.push(...(p.k === "cap" ? [P(ep, t, p.a), P(ep, t, p.b)] : [P(ep, t, p.c)])); });
   return pts.reduce(add, [0, 0, 0]).map(v => v / Math.max(pts.length, 1));
 }
-// presets come from the body, not from assumptions about the setup: "face-on" sits in front
-// of the chest (perpendicular to the shoulder line, on the side the head leans), "down the
-// line" looks along the target direction. if the address pose is off, these views show it.
+// face-on: in front of the chest (from the shoulder line); down the line: along the target
 function presets(ep) {
   const c = centre(ep, 0, p => p.part === "core"), b = P(ep, 0, BALL), td = M.targetDir;
   const sh = DATA.prims.find(p => p.body === "torso" && p.k === "cap");
@@ -350,7 +349,7 @@ function drawTrails(ep, t) {
       line3(P(ep, f - 1, CLUB_HEAD.c), P(ep, f, CLUB_HEAD.c), speedColor(S(ep, f, SC.club) / vmax), 2.5 * dpr);
     }
   }
-  // keyed on when the ball first moved, not the contact detector: a kick never trips the detector
+  // keyed on when the ball first moved
   const hf = ep.struck ? ep.struck.frame : -1;
   if (hf >= 0 && t > hf - 1) {  // ball path after the strike
     for (let f = hf; f <= t; f++) line3(P(ep, f - 1, BALL), P(ep, f, BALL), "rgba(255, 47, 168, .85)", 2 * dpr, [4 * dpr, 4 * dpr]);
@@ -393,8 +392,8 @@ function drawHud(ep, t) {
   $("hud").innerHTML =
     `<div class="row"><span>iter ${ck.iter}</span><span class="k">rank ${ep.rank} of ${M.numEnvs}</span></div>` +
     `<div class="row"><span class="k">time</span><span>${(t * M.dt).toFixed(2)} s &middot; ${t + 1}/${ep.frames}</span></div>` +
-    `<div class="row"><span class="k">clubhead</span><span>${S(ep, t, SC.club).toFixed(2)} m/s</span></div>` +
-    `<div class="row"><span class="k">ball</span><span>${S(ep, t, SC.ball).toFixed(2)} m/s</span></div>` +
+    `<div class="row"><span class="k">clubhead</span><span>${mph(S(ep, t, SC.club))}</span></div>` +
+    `<div class="row"><span class="k">ball</span><span>${mph(S(ep, t, SC.ball))}</span></div>` +
     `<div class="row"><span class="k">club&rarr;ball</span><span>${S(ep, t, SC.dist).toFixed(3)} m</span></div>` +
     `<div class="row"><span class="k">torso height</span><span>${S(ep, t, SC.torso).toFixed(2)} m</span></div>` +
     (ep.smash && ep.struck && t >= ep.struck.frame
@@ -410,8 +409,8 @@ function drawChart() {
   const ep = cur(), Wc = chart.width, Hc = chart.height, d = dpr;
   cg.clearRect(0, 0, Wc, Hc);
   const top = CH.t * d, bot = Hc - CH.b * d;
-  const vmax = Math.max(1, Math.ceil(Math.max(ep.maxClub, ep.maxBall)));
-  const y = v => bot - (bot - top) * v / vmax, yd = m => bot - (bot - top) * Math.min(m, 1);
+  const vmax = Math.max(1, Math.ceil(MPH * Math.max(ep.maxClub, ep.maxBall)));
+  const y = v => bot - (bot - top) * v / vmax, ymph = v => y(MPH * v), yd = m => bot - (bot - top) * Math.min(m, 1);
   cg.font = `${10.5 * d}px system-ui, sans-serif`; cg.textBaseline = "middle";
 
   for (const v of [0, vmax / 2, vmax]) {  // grid
@@ -427,8 +426,8 @@ function drawChart() {
     cg.stroke();
   };
   series(SC.dist, "#5d6673", yd, 1.2);
-  series(SC.club, "#f0a04b", y, 1.8);
-  series(SC.ball, "#ff2fa8", y, 1.8);
+  series(SC.club, "#f0a04b", ymph, 1.8);
+  series(SC.ball, "#ff2fa8", ymph, 1.8);
 
   const vline = (t, color, label, dash, row) => {
     const X = chartX(t, ep); cg.strokeStyle = color; cg.lineWidth = d; cg.setLineDash(dash ? [3 * d, 3 * d] : []);
@@ -448,7 +447,7 @@ function drawChart() {
   // legend top-right, time at both ends of the axis
   cg.textBaseline = "top"; cg.textAlign = "right";
   let lx = Wc - CH.r * d - 4 * d;
-  for (const [txt, col] of [["club→ball m (right axis)", "#7d8796"], ["ball m/s", "#ff2fa8"], ["clubhead m/s", "#f0a04b"]]) {
+  for (const [txt, col] of [["club→ball m (right axis)", "#7d8796"], ["ball mph", "#ff2fa8"], ["clubhead mph", "#f0a04b"]]) {
     cg.fillStyle = col; cg.fillText(txt, lx, top); lx -= cg.measureText(txt).width + 14 * d;
   }
   cg.textBaseline = "alphabetic"; cg.fillStyle = "#8b95a3";
@@ -466,10 +465,11 @@ function renderSidebar() {
     ["Struck by clubhead", pct(s.clubhead_strike_rate)],
     ["Struck by body", pct(s.body_strike_rate)],
     ["Touched before backswing", pct(s.pre_arm_touch_rate ?? s.reset_knock_rate)],
-    ["Ball speed paid, mean", `${s.mean_paid_ball_speed.toFixed(2)} m/s`],
+    ["Ball speed paid, mean", mph(s.mean_paid_ball_speed)],
     ...(s.mean_smash ? [["Smash factor, mean strike", s.mean_smash.toFixed(2)]] : []),
-    ["Ball speed, mean max", `${s.mean_max_ball_speed.toFixed(2)} m/s`],
-    ["Clubhead, mean max", `${s.mean_max_club_speed.toFixed(2)} m/s`],
+    ...(s.backwards_rate !== undefined ? [["Hit backwards", pct(s.backwards_rate)]] : []),
+    ["Ball speed, mean max", mph(s.mean_max_ball_speed)],
+    ["Clubhead, mean max", mph(s.mean_max_club_speed)],
     ["Fell over", pct(s.fell_rate)],
     ["Closest approach", `${s.mean_min_dist.toFixed(3)} m`],
     ["Return, mean", s.mean_return.toFixed(1)],
@@ -486,10 +486,10 @@ function renderSidebar() {
   $("eps").innerHTML = ck.episodes.map((e, i) =>
     `<div class="ep ${i === st.ep ? "on" : ""}" data-ep="${i}">` +
     `<span class="rk">#${e.rank}</span>` +
-    `<span><div class="nums">paid ${e.paid.toFixed(2)} m/s` +
+    `<span><div class="nums">paid ${mph(e.paid)}` +
     `${e.smash ? ` &middot; smash ${e.smash.toFixed(2)}` : ` &middot; closest ${e.minDist.toFixed(3)} m`}</div>` +
     `<div class="badges">${strikeChip(e)}${e.fell ? '<span class="chip fell">fell</span>' : ""}` +
-    `<span class="sub">club ${e.maxClub.toFixed(1)} m/s</span></div></span>` +
+    `<span class="sub">club ${mph(e.maxClub)}</span></div></span>` +
     `</div>`).join("");
 }
 
@@ -592,7 +592,7 @@ $("meta").textContent = `${M.run} · ${phys} · ${M.numEnvs} rollouts per checkp
   `${M.stochastic ? "stochastic actions" : "mean actions"} · recorded ${M.created}`;
 resize();
 select(st.ck, 0);
-setView("face");
+setView("dtl");
 requestAnimationFrame(frame);
 </script>
 </body>

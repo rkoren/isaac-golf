@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from isaaclab_newton.sim.schemas import NewtonArticulationCfg
 from isaaclab_physx.sim.schemas import PhysxArticulationCfg, PhysxRigidBodyCfg
 
@@ -11,38 +9,18 @@ import isaaclab.sim as sim_utils
 from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.assets import ArticulationCfg
 
-GOLFER_USD = str(Path(__file__).resolve().parents[2] / "assets" / "golfer.usda")
+from .clubs import address, golfer_usd
 
 CLUB_BODY = "club"
 LEAD_HAND = "left_hand"
 TRAIL_HAND = "right_hand"
 
-ADDRESS_JOINT_POS = {
-    "lower_waist:0": 0.015,
-    "lower_waist:1": -0.642,
-    "pelvis": 0.041,
-    "right_thigh:0": -0.142,
-    "left_thigh:0": -0.157,
-    "right_thigh:1": -0.531,
-    "left_thigh:1": -0.528,
-    "right_foot:0": -0.156,
-    "right_foot:1": 0.053,
-    "left_foot:0": -0.150,
-    "left_foot:1": -0.058,
-    "right_shin": -0.497,
-    "left_shin": -0.492,
-    "left_upper_arm:0": 0.750,
-    "left_upper_arm:2": 0.022,
-    "left_lower_arm": -0.758,
-    "right_upper_arm:0": 0.848,
-    "right_upper_arm:2": 0.066,
-    "right_lower_arm": -0.803,
-}
+DRIVER = address("driver")
 
 GOLFER_CFG = ArticulationCfg(
     prim_path="{ENV_REGEX_NS}/Robot",
     spawn=sim_utils.UsdFileCfg(
-        usd_path=GOLFER_USD,
+        usd_path=golfer_usd("driver"),
         rigid_props=PhysxRigidBodyCfg(
             disable_gravity=None, max_depenetration_velocity=10.0, enable_gyroscopic_forces=True
         ),
@@ -59,9 +37,9 @@ GOLFER_CFG = ArticulationCfg(
         copy_from_source=False,
     ),
     init_state=ArticulationCfg.InitialStateCfg(
-        pos=(0.123, 0.001, 1.178),
-        rot=(-0.0190, 0.4061, -0.0118, 0.9135),  # (x, y, z, w)
-        joint_pos=ADDRESS_JOINT_POS,
+        pos=tuple(DRIVER["root_pos"]),
+        rot=tuple(DRIVER["root_rot"]),  # (x, y, z, w)
+        joint_pos=DRIVER["joint_pos"],
     ),
     actuators={
         "body": ImplicitActuatorCfg(

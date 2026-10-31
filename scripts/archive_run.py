@@ -15,6 +15,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 MEDIA = REPO / "media"
 UV = ["uv", "run", "--env-file", "omni.env"]
+MPH = 2.23694  # m/s -> mph
 
 ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
 ap.add_argument("run", help="run dir, e.g. logs/rsl_rl/golf_swing/2026-10-29_23-27-19_fixes_120hz")
@@ -36,6 +37,10 @@ ckpts = sorted({ckpts[round(i * (len(ckpts) - 1) / max(n - 1, 1))] for i in rang
 out = MEDIA / f"{time.strftime('%Y-%m-%d')}_{args.stage}_{run.name}"
 out.mkdir(parents=True, exist_ok=True)
 play_dir = run / "videos" / "play"
+# replay with the club the run trained with
+env_yaml = (run / "params" / "env.yaml").read_text(encoding="utf-8") if (run / "params" / "env.yaml").exists() else ""
+club = re.search(r"^club: (\S+)", env_yaml, re.M)
+OVERRIDES = [f"env.club={club.group(1)}"] if club else []
 
 
 def sh(cmd: list[str]) -> None:
@@ -48,7 +53,7 @@ for c in ckpts:
     if not args.existing:
         sh(UV + ["isaaclab", "play", "--rl_library", "rsl_rl", "--task", "Isaac-Golf-Swing-Direct",
                  "--num_envs", "1", "--checkpoint", str(c), "--video", "--video_length", str(args.video_length),
-                 "physics=isaacsim_physx"])
+                 "physics=isaacsim_physx", *OVERRIDES])
     made = sorted(play_dir.glob(f"clip_{c.stem}_*.mp4"))
     if not made:
         print(f"[archive] no clip for {c.stem}, skipping")
@@ -72,7 +77,7 @@ if clips:
                     "-c:v", "libx264", "-pix_fmt", "yuv420p", str(out / "progression.mp4")], check=True)
 
 if not args.existing:
-    sh(UV + ["python", "scripts/record_swings.py", str(run), "physics=isaacsim_physx"])
+    sh(UV + ["python", "scripts/record_swings.py", str(run), "physics=isaacsim_physx", *OVERRIDES])
 viewers = sorted((run / "swings").glob("*.html"), key=lambda p: p.stat().st_mtime)
 summary = ""
 if viewers:
@@ -84,6 +89,9 @@ if viewers:
     club = s.get("clubhead_strike_rate")
     summary = (f"{last['name']}: contact {s['contact_rate']:.0%}"
                + (f", clubhead strikes {club:.0%}, body {s['body_strike_rate']:.0%}" if club is not None else "")
+               + f", ball {MPH * s['mean_max_ball_speed']:.1f} mph, club {MPH * s['mean_max_club_speed']:.1f} mph"
+               + (f", hands {MPH * s['mean_impact_hand_speed']:.1f} mph, impact {s['mean_impact_time']:.2f} s"
+                  if s.get("mean_impact_time") else "")
                + (f", smash {s['mean_smash']:.2f}" if s.get("mean_smash") else "")
                + f", fell {s['fell_rate']:.0%}")
 
