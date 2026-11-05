@@ -16,8 +16,10 @@ from isaaclab.visualizers import VisualizerCfg
 from isaaclab_tasks.core.locomotion.humanoid.humanoid_common import JOINT_GEARS, TERRAIN_CFG
 from isaaclab_tasks.utils import PresetCfg
 
-from .clubs import CLUBS, address, golfer_usd
-from .golfer import GOLFER_CFG
+from .clubs import CLUBS, WRIST, address, golfer_usd
+from .golfer import (
+    GOLFER_CFG, LEG_DAMPING, STIFFNESS, SWING_DAMPING, WRIST_DAMPING, WRIST_GEAR, WRIST_STIFFNESS, WRIST_VMAX,
+)
 
 # golf ball
 BALL_R = 0.02134
@@ -115,6 +117,8 @@ class GolfEnvCfg(DirectRLEnvCfg):
     muscle_vmax: dict[str, float] = MUSCLE_VMAX
     muscle_k: float = 0.25              # Hill curvature (~0.25 for human muscle)
     damping_scale: float = 1.0          # joint damping
+    leg_damping_scale: float | None = None  # hips, knees, ankles; None = damping_scale
+    wrist: bool = False                 # lead wrist hinge between hand and club (22 actions)
     club: str = "driver"                # key into clubs.py; apply_club() sets everything club-specific
     ball_pos: tuple[float, float, float] = BALL_POS
     # aim based on golfer (left for a righty)
@@ -170,7 +174,7 @@ def apply_club(cfg: GolfEnvCfg) -> None:
     """Point the scene at cfg.club: golfer asset, address pose, ball, tee, smash ceiling."""
     spec, addr = CLUBS[cfg.club], address(cfg.club)
     robot = cfg.scene.robot
-    robot.spawn.usd_path = golfer_usd(cfg.club)
+    robot.spawn.usd_path = golfer_usd(cfg.club, cfg.wrist)
     robot.init_state.pos = tuple(addr["root_pos"])
     robot.init_state.rot = tuple(addr["root_rot"])
     robot.init_state.joint_pos = addr["joint_pos"]
@@ -183,3 +187,21 @@ def apply_club(cfg: GolfEnvCfg) -> None:
     else:
         cfg.scene.tee = None
     cfg.smash_max = spec.smash_max
+
+
+def apply_body(cfg: GolfEnvCfg) -> None:
+    """Joint damping, and the lead wrist's actuator and spaces when cfg.wrist."""
+    act = cfg.scene.robot.actuators["body"]
+    legs = cfg.damping_scale if cfg.leg_damping_scale is None else cfg.leg_damping_scale
+    act.damping = {
+        **{k: v * cfg.damping_scale for k, v in SWING_DAMPING.items()},
+        **{k: v * legs for k, v in LEG_DAMPING.items()},
+    }
+    if not cfg.wrist:
+        return
+    act.damping[WRIST] = WRIST_DAMPING * cfg.damping_scale
+    act.stiffness = {**STIFFNESS, WRIST: WRIST_STIFFNESS}
+    cfg.joint_gears = {**JOINT_GEARS, WRIST: WRIST_GEAR}
+    cfg.muscle_vmax = {**MUSCLE_VMAX, WRIST: WRIST_VMAX}
+    cfg.action_space = 22
+    cfg.observation_space = 84  # +1 joint pos, vel and action

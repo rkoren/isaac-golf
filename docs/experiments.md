@@ -512,3 +512,107 @@ Runs, muscles on, from scratch with run 17 → 18's recipe (strike stage 300 ite
   cap from damping), not something to fix with a backswing reward.
 - Human-like damping makes balance an active skill. Standing now needs either its own reward
   (`stand_weight`, `feet_slip_weight`) or stiffer legs.
+
+## Getting balance back at low damping (2026-10-31)
+
+Two fixes for run 22's 98% falls, both resumed from its `model_598.pt` for 500 iterations, side by side,
+both with `env.aim_sigma=15 env.finish_low=0.8` on top of run 22's settings:
+- run 25 `lowdamp_balance`: damping × 0.1 everywhere, plus the balance rewards
+  (`env.stand_weight=10 env.feet_slip_weight=10`).
+- run 26 `lowdamp_braced`: legs back at stock damping (new knob `env.leg_damping_scale=1.0`; hips,
+  knees, ankles), swing joints × 0.1, no balance rewards. The argument: a braced human leg co-contracts
+  opposing muscles, which a one-torque-per-joint actuator can't, so leg damping stands in for it.
+
+All 64 rollouts, mean actions, final checkpoint (`model_1097`):
+
+| run | clubhead at impact | lead hand | ball | smash | offline | fell | torso at finish |
+|---|---|---|---|---|---|---|---|
+| 22 (start) | 67.5 mph | 22.4 mph | 82 mph | 1.22 | +12° | 98% | 0.30 m |
+| 25 balance rewards | **70.9 mph** | 23.4 mph | **89 mph** | 1.27 | 1° | 19% | 0.90 m |
+| 26 braced legs | 59.7 mph | 20.2 mph | 72 mph | 1.21 | 1° | 16% | 0.93 m |
+
+- Both stand again most of the time. Run 25 was still improving at the end (falls 100 → 83 → 58 → 34 →
+  28 → 19% across checkpoints); run 26 flattened from iteration 900.
+- Run 25 keeps the speed; braced legs cost ~11 mph, since the leg dampers burn energy again.
+- Aim at low damping: ~1° offline in both, from +12°.
+- Balance is still marginal on the hardest hits. One-golfer replays: seed 42 falls (ball 100 mph), seed 7
+  stands (73 mph). The archived clip happens to be a seed that falls; the 64-rollout numbers are the
+  representative ones.
+- The backswing stays at ~1.25 m in both: balance doesn't change the swing length.
+
+**Takeaway**
+- Balance rewards on a low-damping body beat stiff legs: same standing rate, ~11 mph more. A reward that
+  costs nothing while standing doesn't drown the strike once the policy already strikes reliably.
+
+## Lead wrist hinge (2026-10-31)
+
+At low damping the arms reach impact near their muscle vmax, so a longer arm swing can't add speed. A real
+golfer's long backswing pays through the wrist: set it at the top, pull the handle down with the body,
+and the club releases late (lag). The golfer had no wrist; the club was welded to the lead hand.
+
+`env.wrist=true` swaps the weld for a revolute joint `lead_wrist` (asset `golfer_driver_wrist.usda`,
+`make_golfer_asset.py --club driver --wrist`; driver only so far):
+- axis: the club's toe-heel line, i.e. the swing plane at address (shaft + face normal). A stand-in for
+  the wrist's cock plus forearm roll, since the arms have no forearm rotation.
+- limits −25° / +70° from the address angle (+ cocks the head away from the target), gear 10 N·m
+  (arms 67.5), muscle vmax 30 rad/s, spring 2 N·m/rad toward address, damping 0.5 × `damping_scale`.
+- 22 actions, 84 observations; the address is unchanged (head position identical to the weld's with
+  reset jitter off). Reset jitter (±0.05 rad) now also moves the head ±4 cm at the wrist, which can close
+  the 2 cm address gap; harmless, since a strike needs arming first.
+
+From scratch, muscles, damping × 0.1: run 27 → 28 is run 21 → 22's two stages; run 29 adds run 25's balance
+and aim stage (500 iters). All 64 rollouts, mean actions, final checkpoints:
+
+| run | backswing | address → impact | clubhead at impact | lead hand | club ÷ hand | ball | smash | fell | torso at finish |
+|---|---|---|---|---|---|---|---|---|---|
+| 22 (no wrist) | 1.28 m at 0.17 s | 0.26 s | 67.5 mph | 22.4 mph | 3.0× | 82 mph | 1.22 | 98% | 0.30 m |
+| 28 `wrist_full_finish` | 1.55 m at 0.23 s | 0.33 s | 77.5 mph | 17.0 mph | 4.6× | 76 mph | 1.09 | 100% | 0.13 m |
+| 29 `wrist_balance` | **1.68 m** at 0.22 s | 0.33 s | **83.8 mph** | 17.0 mph | **4.9×** | **95 mph** | 1.24 | **100%** | 0.35 m |
+
+- The backswing finally grows, past the 1.2 m the backswing reward pays for, so it's physics doing it. It
+  kept growing through both stages.
+- More clubhead speed from slower hands; the 4.6–4.9× club-to-hand ratio is a real golfer's 4–5×.
+- The release is passive. Downswing energy budget (run 28): the wrist reaches 17 rad/s at impact but its
+  muscle does 0.8 J of work. 152 J of muscle work (vs 161 J without the wrist) puts 187 J into the club
+  (vs 142 J). At impact the lead arm is braking (−34 N·m), handing its energy on, as a golfer's hands
+  slow through impact.
+- Balance is not solved with the wrist: run 29 falls on every swing despite the balance rewards. Finish
+  torso was creeping up (0.14 → 0.35 m) but nowhere near run 25's 19% falls over the same 500 iterations.
+  It drops into a deep squat after impact and tips forward. A harder swing from a body that had never
+  learned to stand.
+- Heel strikes (labelled "shaft" by `record_swings.py`, counted as head strikes by the env) rose to 27%
+  of strikes; smash 1.24.
+
+**Takeaway**
+- The wrist is the physics that makes a long backswing pay, as in real golf: a longer, later-released
+  swing with slower hands and more clubhead speed, with no reward for swing length.
+- Balance has to be learned again for every new body, and a faster swing makes it harder.
+
+### More balance training, loose vs braced legs (2026-11-05)
+
+Two ways to get the wrist golfer standing, each with 1,500 iterations of run 29's balance + aim stage in total:
+- run 30 `wrist_balance_more`: run 29 continued for 1,000 more iterations (1097 → 2096).
+- run 31 `wrist_braced_balance`: from run 28 (598, where run 29 started) with `env.leg_damping_scale=1.0`
+  (hips, knees, ankles at stock damping, as in run 26), 1,500 iterations (598 → 2097).
+
+| run | backswing | clubhead at impact | lead hand | ball | smash | offline | fell | torso at finish |
+|---|---|---|---|---|---|---|---|---|
+| 29 (start of 30) | 1.68 m | 83.8 mph | 17.0 mph | 95 mph | 1.24 | 2° | 100% | 0.35 m |
+| 30 loose legs | 1.69 m | **89.7 mph** | 20.7 mph | **114 mph** | 1.38 | 1° | 98% | 0.42 m |
+| 31 braced legs | 1.62 m | 82.0 mph | 17.9 mph | 106 mph | 1.39 | 1° | **83%** | 0.42 m |
+
+- Neither stands. Run 30 spent the extra iterations on speed (clubhead +6 mph, smash 1.24 → 1.38), with
+  the finish flat at 0.35–0.44 m the whole way.
+- Run 31 holds its height longer after impact (torso 0.91 m 20 steps after impact, vs 0.70 m in run 30,
+  over the viewer's 12 recorded swings) before collapsing, and only started to stand in its last 200 iterations (falls 100% → 89% → 83%).
+  Bracing costs ~8 mph, as it did without the wrist (run 26).
+- Why the balance stage stalls: half the ball pay (`finish_frac=0.5`) is scaled by finish height, and
+  with `finish_low=0.8` that credit is exactly zero anywhere below 0.8 m. At a 0.42 m finish, standing a
+  little taller earns nothing; only the stand penalty (10 × the drop below 0.95 m) pulls up. Run 25
+  (no wrist) never hit this: it was already finishing near 0.8 m.
+- "Shaft" labels in the viewer (23–44 of 64) are heel-side strikes; every launch is still a head strike
+  in the env, and smash rose to 1.38–1.39.
+
+**Takeaway**
+- More iterations alone don't buy balance when the finish reward is flat where the golfer finishes.
+  Braced legs help it stay up longer but cost speed.

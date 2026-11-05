@@ -11,8 +11,8 @@ from isaaclab.utils import index_fill_
 from isaaclab.utils.math import normalize, quat_apply, quat_apply_inverse, sample_uniform, scale_transform
 from isaaclab.utils.string import resolve_matching_names_values
 
-from .golf_env_cfg import MPH, GolfEnvCfg, apply_club
-from .golfer import CLUB_BODY, DAMPING, LEAD_HAND, TRAIL_HAND
+from .golf_env_cfg import MPH, GolfEnvCfg, apply_body, apply_club
+from .golfer import CLUB_BODY, LEAD_HAND, TRAIL_HAND
 from .shapes import body_shapes
 
 
@@ -20,14 +20,13 @@ class GolfEnv(DirectRLEnv):
     cfg: GolfEnvCfg
 
     def __init__(self, cfg: GolfEnvCfg, render_mode: str | None = None, **kwargs):
-        apply_club(cfg)  # here, not in the cfg, so an env.club= override takes effect
-        cfg.scene.robot.actuators["body"].damping = {k: v * cfg.damping_scale for k, v in DAMPING.items()}
+        apply_club(cfg)
+        apply_body(cfg)
         super().__init__(cfg, render_mode, **kwargs)
 
         self.robot, self.ball = self.scene["robot"], self.scene["ball"]
         self.action_scale = self.cfg.action_scale
 
-        # gears by name: joint ordering differs per backend
         self.joint_gears = torch.ones(self.robot.num_joints, device=self.device)
         joint_ids, _, gears = resolve_matching_names_values(self.cfg.joint_gears, self.robot.joint_names)
         self.joint_gears[joint_ids] = torch.tensor(gears, device=self.device)
@@ -45,7 +44,7 @@ class GolfEnv(DirectRLEnv):
         self.target_dir = normalize(
             torch.tensor(self.cfg.target_dir, dtype=torch.float32, device=self.device).repeat(self.num_envs, 1)
         )
-        # per-episode logged at reset
+
         self.impacted = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self.post_impact = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self.min_dist = torch.full((self.num_envs,), 1e3, device=self.device)
@@ -67,7 +66,7 @@ class GolfEnv(DirectRLEnv):
             [abs(box[2 + i][i] - box[1][i]) for i in range(3)], dtype=torch.float32, device=self.device
         )
         self.ball_r = self.scene["ball"].cfg.spawn.radius
-        # ball rest pose on the tee (quat xyzw)
+
         self.tee_pose = torch.zeros(self.num_envs, 7, device=self.device)
         self.tee_pose[:, :3] = torch.tensor(self.cfg.ball_pos, device=self.device) + self.scene.env_origins
         self.tee_pose[:, 6] = 1.0
@@ -75,7 +74,7 @@ class GolfEnv(DirectRLEnv):
 
         self._compute_intermediate_values()
         self.feet_home = self.feet_xy.clone()  # address foot positions
-        # start-of-step state for the swept contact test
+
         self.prev_club_pos = self.club_pos.clone()
         self.prev_club_quat = self.club_quat.clone()
         self.prev_ball_pos = self.ball_pos.clone()

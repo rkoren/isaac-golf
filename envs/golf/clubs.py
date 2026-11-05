@@ -32,8 +32,11 @@ CLUBS = {
 }
 
 
-def golfer_usd(club: str) -> str:
-    return str(ASSETS_DIR / f"golfer_{club}.usda")
+WRIST = "lead_wrist" 
+
+
+def golfer_usd(club: str, wrist: bool = False) -> str:
+    return str(ASSETS_DIR / f"golfer_{club}{'_wrist' if wrist else ''}.usda")
 
 
 def address(club: str) -> dict:

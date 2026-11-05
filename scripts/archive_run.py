@@ -39,7 +39,7 @@ out.mkdir(parents=True, exist_ok=True)
 play_dir = run / "videos" / "play"
 # replay with the run's club and body (reward-only settings don't change the swing)
 env_yaml = (run / "params" / "env.yaml").read_text(encoding="utf-8") if (run / "params" / "env.yaml").exists() else ""
-REPLAY = ("club", "muscle", "muscle_k", "damping_scale", "impact_arm_dist")
+REPLAY = ("club", "wrist", "muscle", "muscle_k", "damping_scale", "leg_damping_scale", "impact_arm_dist")
 OVERRIDES = [f"env.{k}={m.group(1)}" for k in REPLAY if (m := re.search(rf"^{k}: (\S+)", env_yaml, re.M))]
 print(f"[archive] replay overrides: {OVERRIDES}")
 
