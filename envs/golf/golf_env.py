@@ -60,6 +60,7 @@ class GolfEnv(DirectRLEnv):
         self.backwards = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self.offline = torch.zeros(self.num_envs, device=self.device)
         self.new_hit = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self.fallen = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
         box = next(s for s in body_shapes(self.cfg.scene.robot.spawn.usd_path)[CLUB_BODY] if s[0] == "box")
         self.head_half = torch.tensor(
@@ -243,6 +244,9 @@ class GolfEnv(DirectRLEnv):
         stand = self.cfg.stand_weight * torch.relu(self.cfg.stand_height - self.torso_pos[:, 2])
         slip = torch.relu(torch.linalg.norm(self.feet_xy - self.feet_home, dim=-1) - self.cfg.feet_slip_free)
         feet = self.cfg.feet_slip_weight * slip.sum(-1)
+        new_fall = (self.torso_pos[:, 2] < self.cfg.fall_height) & ~self.fallen
+        self.fallen |= new_fall
+        fall = self.cfg.fall_penalty * new_fall.float() / self.step_dt
 
         actions_cost = torch.sum(self.actions**2, dim=-1)
         energy_cost = torch.sum(torch.abs(self.actions * self.dof_vel * self.gear_ratio_scaled), dim=-1)
@@ -265,6 +269,7 @@ class GolfEnv(DirectRLEnv):
         log["Reward/trail_hand"] = -trail.mean()
         log["Reward/stand"] = -stand.mean()
         log["Reward/feet"] = -feet.mean()
+        log["Reward/fall"] = -fall.mean()
         log["Reward/backwards"] = -backwards.mean()
         log["Metrics/torso_height"] = self.torso_pos[:, 2].mean()
         if self.cfg.muscle:
@@ -281,6 +286,7 @@ class GolfEnv(DirectRLEnv):
             - trail
             - stand
             - feet
+            - fall
             - backwards
             - self.cfg.actions_cost_scale * actions_cost
             - self.cfg.energy_cost_scale * energy_cost
@@ -304,6 +310,7 @@ class GolfEnv(DirectRLEnv):
         log = self.extras.setdefault("log", {})
         log["Metrics/contact_rate"] = self.impacted[env_ids].float().mean()
         log["Metrics/min_club_ball_dist"] = self.min_dist[env_ids].mean()
+        log["Metrics/fell_rate"] = self.fallen[env_ids].float().mean()
         struck = self.impacted[env_ids]
         if struck.any():
             # at the strike: human-plausibility checks
@@ -331,6 +338,7 @@ class GolfEnv(DirectRLEnv):
         index_fill_(self.smash, env_ids, 0.0)
         index_fill_(self.backwards, env_ids, False)
         index_fill_(self.offline, env_ids, 0.0)
+        index_fill_(self.fallen, env_ids, False)
 
         # golfer back to the address pose, offset into its env
         root_pose = self.robot.data.default_root_pose.torch[env_ids].clone()

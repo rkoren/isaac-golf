@@ -141,6 +141,8 @@ class GolfEnvCfg(DirectRLEnvCfg):
     stand_height: float = 0.95          # [m] address torso is ~1.18
     feet_slip_weight: float = 0.0       # foot slide beyond feet_slip_free [per m]
     feet_slip_free: float = 0.03        # [m]
+    fall_penalty: float = 0.0           # one-off: torso first drops below fall_height
+    fall_height: float = 0.6            # [m] same as record_swings' "fell"
     actions_cost_scale: float = 0.005
     energy_cost_scale: float = 0.002
     joint_pos_limits_cost_scale: float = 0.25

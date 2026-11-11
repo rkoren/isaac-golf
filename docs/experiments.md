@@ -616,3 +616,45 @@ Two ways to get the wrist golfer standing, each with 1,500 iterations of run 29'
 **Takeaway**
 - More iterations alone don't buy balance when the finish reward is flat where the golfer finishes.
   Braced legs help it stay up longer but cost speed.
+
+## A one-off fall penalty (2026-11-05)
+
+Runs 30–31 showed the balance stage gives almost no reason to stay up. Measured from run 31's recorded
+swings, the per-step stand penalty (10 × the drop below 0.95 m) costs a faller ~2.3 points and a stander
+~1.3, since the fall comes late in the 1 s finish window. The finish credit pays nothing to either (the
+standers finish at 0.61–0.74 m, below `finish_low=0.8`). The full ball pay is ~142 points.
+
+New knobs (off by default): `env.fall_penalty`, paid once when the torso first drops below
+`env.fall_height` (0.6 m, the same line `record_swings.py` uses for "fell"). New training metric
+`Metrics/fell_rate`, over every episode that ends, so falls can be watched in TensorBoard.
+
+Both from run 31 (`model_2097`, wrist, braced legs, run 29's balance + aim stage), 500 iterations:
+- run 32 `wrist_fall50`: `env.fall_penalty=50`, about a third of the ball pay.
+- run 33 `wrist_fall_control`: unchanged.
+
+Fell rate during training (exploration noise on, 1,024 envs), 100-iteration averages:
+
+| iterations | 2097–2196 | 2197–2296 | 2297–2396 | 2397–2496 | 2497–2596 |
+|---|---|---|---|---|---|
+| 32 fall penalty | 87% | 82% | 78% | 68% | 66% |
+| 33 control | 87% | 89% | 89% | 91% | 94% |
+
+64 rollouts, mean actions, final checkpoints:
+
+| run | clubhead at impact | lead hand | ball | smash | contact | fell | torso at finish |
+|---|---|---|---|---|---|---|---|
+| 31 (start) | 82.0 mph | 17.9 mph | 106 mph | 1.39 | 100% | 83% | 0.42 m |
+| 32 fall penalty | 82.1 mph | 17.9 mph | 98 mph | 1.37 | 95% | **48%** | **0.56 m** |
+| 33 control | 82.5 mph | 17.7 mph | 101 mph | 1.38 | 95% | 95% | 0.35 m |
+
+- The penalty works and costs no clubhead speed. The control drifts the other way: without a reason to
+  stand, run 31's late gain (100% → 83%) didn't hold.
+- Evaluated fall rates are noisy checkpoint to checkpoint (run 32: 86, 81, 61, 72, 66, 48%); the
+  training curve, over ~1,000 episodes per iteration, is the steadier read.
+- Both final checkpoints whiff 3 of 64 (ball speed counts a miss as 0), so it's not the penalty.
+- Most of the swings that stay up are crouched (torso 0.6–0.8 m at the end). The penalty only asks it
+  to stay above 0.6 m, so it may learn to hover just above the line.
+
+**Takeaway**
+- A reward term has to separate the outcomes you care about. The stand penalty and the finish credit
+  barely told a fall from a stand apart; a one-off penalty for crossing a line did.
