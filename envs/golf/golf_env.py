@@ -57,6 +57,7 @@ class GolfEnv(DirectRLEnv):
         self.max_ball_speed = torch.zeros(self.num_envs, device=self.device)
         self.launch_speed = torch.zeros(self.num_envs, device=self.device)
         self.smash = torch.zeros(self.num_envs, device=self.device)
+        self.sweet = torch.zeros(self.num_envs, device=self.device)
         self.backwards = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self.offline = torch.zeros(self.num_envs, device=self.device)
         self.new_hit = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
@@ -169,6 +170,7 @@ class GolfEnv(DirectRLEnv):
             self.ball.write_root_velocity_to_sim_index(root_velocity=launch, env_ids=ids)
         self.launch_speed = torch.where(hit, speed, self.launch_speed)
         self.smash = torch.where(hit, smash, self.smash)
+        self.sweet = torch.where(hit, sweet * (side > 0), self.sweet)
         # backwards: back of the head, or the ball heading away from the target
         away = (side < 0) | ((direction * self.target_dir).sum(-1) < 0)
         self.backwards = torch.where(hit, away, self.backwards)
@@ -216,6 +218,9 @@ class GolfEnv(DirectRLEnv):
         if self.cfg.aim_sigma > 0:
             # direction: a sideways hit pays less than a straight one
             ball_speed = ball_speed * torch.exp(-(self.offline / self.cfg.aim_sigma) ** 2)
+        if self.cfg.strike_pow > 0:
+            # strike quality: an off-centre hit pays less than smash alone takes off
+            ball_speed = ball_speed * self.sweet**self.cfg.strike_pow
         backwards = self.cfg.backwards_penalty * (self.new_hit & self.backwards).float() / self.step_dt
         gained = torch.relu(ball_speed - self.max_ball_speed)
         self.max_ball_speed = torch.maximum(self.max_ball_speed, ball_speed)
@@ -271,6 +276,9 @@ class GolfEnv(DirectRLEnv):
         log["Reward/feet"] = -feet.mean()
         log["Reward/fall"] = -fall.mean()
         log["Reward/backwards"] = -backwards.mean()
+        log["Reward/actions"] = -self.cfg.actions_cost_scale * actions_cost.mean()
+        log["Reward/energy"] = -self.cfg.energy_cost_scale * energy_cost.mean()
+        log["Reward/limits"] = -self.cfg.joint_pos_limits_cost_scale * limit_cost.mean()
         log["Metrics/torso_height"] = self.torso_pos[:, 2].mean()
         if self.cfg.muscle:
             log["Metrics/muscle_torque_frac"] = self.muscle_frac.mean()
@@ -336,6 +344,7 @@ class GolfEnv(DirectRLEnv):
         index_fill_(self.max_ball_speed, env_ids, 0.0)
         index_fill_(self.launch_speed, env_ids, 0.0)
         index_fill_(self.smash, env_ids, 0.0)
+        index_fill_(self.sweet, env_ids, 0.0)
         index_fill_(self.backwards, env_ids, False)
         index_fill_(self.offline, env_ids, 0.0)
         index_fill_(self.fallen, env_ids, False)

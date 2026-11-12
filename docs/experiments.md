@@ -658,3 +658,174 @@ Fell rate during training (exploration noise on, 1,024 envs), 100-iteration aver
 **Takeaway**
 - A reward term has to separate the outcomes you care about. The stand penalty and the finish credit
   barely told a fall from a stand apart; a one-off penalty for crossing a line did.
+
+## Out of the crouch, errant shots, a controlled swing (2026-11-11)
+
+A batch of experiments while the user was away: lift the golfer out of its crouched finish, penalise errant
+shots, and push toward a more controlled swing. Mostly on the wrist golfer with braced legs, starting
+from run 32 (fall penalty 50); a few on the loose-legs body and one lineage from scratch. Each variant
+ran 500 iterations from the same checkpoint as an unchanged control. Evaluation: 64 rollouts with mean actions, final checkpoint. The evaluated fall rate moves
+±10 points between neighbouring checkpoints of the same run, so only bigger gaps count.
+
+New tooling:
+- `record_swings.py` also reports the spread: 90th-percentile offline angle, 10th-percentile smash, and
+  the share of swings finishing with the torso at 0.9 m or higher ("tall finish").
+- The env logs `Reward/actions`, `Reward/energy` and `Reward/limits`, so every term's size is visible.
+  At the stock scales the energy cost is ~0.4% of the ball pay and does nothing.
+- `env.strike_pow` (off by default): ball pay × the sweet-spot factor^p, the same 0–1 factor the smash
+  model uses (1 at dead centre, 0.44 for a 2 cm toe miss). Reward-only; the launch is unchanged.
+
+### What the crouch is
+
+Measured from the 12 recorded swings of run 34 (head height, knee bend between the thigh and shin
+axes, feet slide):
+
+| | address | impact | end of finish |
+|---|---|---|---|
+| head height | 1.30 m | 1.02 m | 0.67 m (0.3–0.96) |
+| trail knee bend | 28° | **110°** | 144° |
+| lead knee bend | 30° | 33° | 140° |
+| feet moved from address (both) | 0 | 0.18 m | 0.83 m, ending together |
+
+It drops onto its trail knee in the downswing (head down 28 cm by impact), then slides its feet together
+and sits. Every run below keeps the same impact posture (trail knee 104–111°, head 1.00–1.02 m): the
+downswing lasts ~0.1 s, so per-second posture penalties barely touch it, and they act on the finish.
+
+### Rounds 1–3: from run 32, then run 34
+
+Run 34 `crouch_lift` moved finish credit to start at 0.6 m (`env.finish_low=0.6`), so the finishes
+around 0.55–0.75 m sit on a slope instead of the flat zero below 0.8. Run 36 tried the fall penalty on
+the faster loose-legs body (run 30). Runs 37–41 then each changed one thing from run 34's checkpoint.
+
+| run | from | change | clubhead | ball | smash (p10) | offline (p90) | fell | finish torso |
+|---|---|---|---|---|---|---|---|---|
+| 32 (start) | | | 82.1 mph | 98 mph | 1.37 | 1.9° | 48% | 0.56 m |
+| 34 `crouch_lift` | 32 | `finish_low=0.6` | 81.8 mph | 100 mph | 1.32 (1.15) | 2.1° (3.0°) | 48% | 0.54 m |
+| 36 `loose_fall50` | 30 | loose legs + fall penalty | **88.9 mph** | **113 mph** | 1.39 | 1° | 72% | 0.52 m |
+| 40 `r2_control` | 34 | none | 80.5 mph | 97 mph | 1.31 (1.13) | 2.4° (4.0°) | 20% | 0.64 m |
+| 37 `aim7` | 34 | `aim_sigma=7` | 80.1 mph | 99 mph | 1.34 (1.17) | **1.8° (2.6°)** | 28% | 0.61 m |
+| 38 `energy50x` | 34 | `energy_cost_scale=0.1` | 80.4 mph | 99 mph | 1.33 (1.17) | 2.3° (3.5°) | 31% | 0.63 m |
+| 39 `posture` | 34 | `stand_height=1.05`, `stand_weight=40` | 79.3 mph | 96 mph | 1.30 (1.11) | 2.6° (3.6°) | 14% | 0.66 m |
+| 41 `feet50` | 34 | `feet_slip_weight=50` | 80.1 mph | 94 mph | 1.32 (1.10) | 2.7° (4.1°) | 30% | 0.63 m |
+
+- Run 34 itself changed nothing in its own 500 iterations, but the *next* 500 did: the control (run 40)
+  went from 48% to 20% falls and 0.54 → 0.64 m. A slope takes a while to climb.
+- Against that control, posture, energy and feet are within the checkpoint noise. Without run 40 each
+  of them would have looked like a 20–35-point win. Tighter aim is the only clear effect: 90% of
+  shots within 2.6° of the line, against 4.0°.
+- Feet planted (run 41) cut the feet's slide at the finish from 1.12 m to 0.81 m but didn't raise it.
+- The energy cost needed 50× before it was even 5–9% of the ball pay (10× was ~3%, aborted).
+- No swing in any run finishes with the torso at 0.9 m or higher.
+- Run 35 (run 32 continued unchanged, the control for run 34) drifted from 65% to 81% falls in training;
+  its archive was stopped part-way by a low-memory reaper (three clips, no viewer).
+
+### Rounds 4–5: from run 40
+
+Same method, one change each from run 40's checkpoint (`model_3594`), against run 43, run 40 continued
+unchanged.
+
+| run | change | clubhead | ball | smash (p10) | offline (p90) | fell | finish torso |
+|---|---|---|---|---|---|---|---|
+| 43 `r3_control` | none | 78.7 mph | 93 mph | 1.28 (1.14) | 1.6° (2.8°) | 16% | 0.62 m |
+| 42 `bar75` | `fall_height=0.75` | 79.1 mph | 92 mph | 1.27 (1.06) | 1.2° (2.1°) | 58% | 0.50 m |
+| 45 `bar65` | `fall_height=0.65` | 79.0 mph | 91 mph | 1.25 (1.04) | 1.7° (3.9°) | 28% | 0.62 m |
+| 44 `strike1` | `strike_pow=1` | 78.0 mph | 96 mph | **1.34 (1.19)** | 1.6° (2.8°) | 20% | 0.62 m |
+| 46 `gamma995` | `agent.algorithm.gamma=0.995` | 79.4 mph | 93 mph | 1.27 (1.08) | 1.7° (2.8°) | 16% | 0.62 m |
+| 47 `posture200` | `stand_height=1.05`, `stand_weight=200` | 78.8 mph | 94 mph | 1.28 (1.08) | 3.2° (4.8°) | **12%** | **0.69 m** |
+
+- Raising the fall line to 0.75 m backfired: every swing dips below 0.75 m at some point (none of run 40's
+  recorded swings stays above 0.7 m), so the penalty became a flat 50 points on every episode with no
+  signal, and the old 0.6 m line lost its pull (falls 22% → 58%). At 0.65 m, which a third to two-fifths
+  of swings clear, training falls below the line went 63% → 52%, but the evaluation didn't move.
+  A threshold only teaches when a good share of attempts land on each side of it.
+- Centred strikes (run 44) is the one errant-shot win here: over the last three checkpoints smash 1.35
+  against the control's 1.30, the worst tenth 1.22 against 1.15, ball +3 mph on slightly less head speed.
+- γ 0.995 weighs the finish (up to 1 s after impact) ~35% more than γ 0.99 does, and changed nothing.
+- `stand_weight=200` made standing the biggest term (−54 against +47 for ball speed) and lifted the
+  finish 0.62 → 0.69 m (head at the end 0.69 → 0.83 m) with falls at 11–12% over its last two checkpoints,
+  at no speed cost, but it pulls more (−3.1° bias) and the knees still end bent ~155°.
+
+Where the crouch comes from: the no-wrist low-damping golfers (runs 25–26) stayed tall, with the head at
+1.22 m at impact and 1.10–1.14 m at the end. The wrist lineage was already at 1.08 m at impact in its
+second stage (run 28) and has never stood tall since. The crouched downswing was learned before any
+balance term existed, and every run here only fine-tunes on top of it.
+
+### Wrist from scratch with braced legs (runs 49–51, 53–56)
+
+To test whether the crouch was learned in the early stages, the wrist golfer was trained from scratch with
+`env.leg_damping_scale=1.0` from iteration 0: run 27 → 28's two stages (runs 49 `scratch_strike`, 50
+`scratch_full_finish`), then a balance stage.
+
+- After the two stages (run 50, `model_598`): clubhead 65 mph, ball 68 mph, smash 1.11, offline ~6°,
+  falls on every swing, as run 28 did at 78 mph. Bracing costs speed from the start, but the head stays
+  higher at impact (1.20 m vs run 28's 1.08 m); the trail knee still bends ~113°.
+- Run 51 `scratch_balance` used this session's full recipe straight away (finish credit from 0.6 m,
+  `aim_sigma=7`, `strike_pow=1`, fall penalty 50) and **stopped hitting the ball**: contact 100% → 91% →
+  8% → 0% by iteration 900, and by the end it stood still (0% falls, no swing). The stand-still trap of
+  run 5, rebuilt from different parts: with shots still poor (6–13° offline, smash ~1.1), the
+  multiplicative quality terms left ~5% of the ball pay (aim × sweet-spot factor × a zero finish
+  credit), and the flat 50-point fall penalty outweighed it.
+- Run 53 `scratch_balance2` retries the stage from run 50 with run 29's gentler recipe (finish credit
+  from 0.6 m, `aim_sigma=15`, no fall penalty, no strike term).
+- Run 53 kept hitting on every swing and kept improving through its 600 iterations: clubhead 65 → 75 mph,
+  ball 72 → 89 mph, smash 1.26, offline 1.1° (90% within 2.0°, bias −0.5°, the straightest of the
+  session), backswing 1.80 m, lead hand 17 mph. It falls on every swing (no fall penalty), but it
+  topples over flat rather than sitting: knees straight at the end. At impact the head is at 1.20 m with
+  the trail knee at 86°, against 1.00 m and ~110° in the braced runs that inherited the loose-legs
+  swing. Bracing from the start learns a taller downswing.
+- Run 54 `scratch_fall30` adds a fall penalty of 30, below the ~59 points of immediate ball pay at its
+  89 mph (half the pay waits for the finish), so the stand-still trap stays shut. In 500 iterations:
+  falls 100% → 41% (training 99% → 53%, still dropping fast), finish 0.35 → 0.71 m, and **48% of swings
+  finish tall** (torso ≥ 0.9 m) with the head at 0.92 m and both knees nearly straight (3°/8°): standing
+  up, not crouching, and no launches (torso never above 1.1 m). The outcome is bimodal: it either stands
+  tall or falls, which is why the mean finish is 0.71 m. Clubhead 74 mph, ball 82 mph, smash 1.20,
+  offline 1.1° (90% within 2.5°), head at impact 1.16 m, trail knee 93°.
+- Run 55 `scratch_fall30b`, 500 more unchanged: falls 25% (checkpoints 42, 22, 33, 39, 36, 25%), finish
+  0.83 m, **66% tall finishes**, head at the end 1.07 m with the trail leg straight; still no launches.
+  Strike quality is what it gave up: smash 1.20 → 1.12, ball 82 → 76 mph at 73 mph clubhead.
+- Run 56 `scratch_strike05` adds a gentle `strike_pow=0.5` (pay × √sweet, so a swing stays worth more
+  than standing still at this smash): smash over the last three checkpoints 1.15 against run 55's 1.12,
+  ball 77.5 mph, but clubhead 73 → 70 mph and offline 1.1° → 1.5° (bias +1.4°); falls 16–38% and tall
+  finishes 45–70% across checkpoints, the same as run 55 within noise. No clear win in 500 iterations.
+
+### Long runs on the loose-legs body, and a physics exploit (runs 48, 52)
+
+Run 48 `loose_recipe`: run 36 (loose legs, fall penalty, 72% falls, 89 mph) with finish credit from 0.6 m,
+`aim_sigma=7` and `strike_pow=1`, 1,000 iterations. Run 52 `loose_recipe2`: 1,000 more, unchanged.
+
+| run, checkpoint | clubhead | ball | smash (p10) | offline (p90) | fell | finish torso | "tall" finish |
+|---|---|---|---|---|---|---|---|
+| 48, 2600 | 89.2 mph | 112 mph | 1.37 (1.21) | 1.2° (3.2°) | 67% | 0.53 m | 9% |
+| 48, 3594 | 87.9 mph | 104 mph | 1.32 (1.18) | 2.3° (3.5°) | 58% | 0.88 m | 41% |
+| 52, 4593 | 85.2 mph | 80 mph | 1.09 (1.00) | 8.1° (9.9°) | 20% | 1.92 m | 81% |
+
+The "tall finishes" are flight. From run 48's checkpoint 2700 on, the golfer launches itself into the air
+about half a second after impact: its lower foot goes 0.13 → 0.68 → 1.82 → 2.6 m in steps of 8 frames
+(~9 m/s up), the torso reaches 2–4 m. Airborne, it's never below the fall or stand lines and the finish
+credit is maxed. The ball pay meanwhile collapsed: once aim and strike quality slipped a little, the two
+multiplicative terms shrank the pay further (the training-time paid ball speed fell from 34 to 2 mph), so
+flight was worth more than a good shot, and the shots got worse still.
+- Cause: PhysX depenetration. The robot's `max_depenetration_velocity` is 10 m/s (`golfer.py`).
+  Replaying run 52's last checkpoint with
+  `env.scene.robot.spawn.rigid_props.max_depenetration_velocity=1.0`: torso peak 3.7 → 1.4 m, finish
+  1.92 → 0.59 m, falls 20% → 58%. The policy drives a body into an overlap and PhysX pushes it out at up to
+  10 m/s; a small hop remains.
+- Only the loose-legs runs found it (springy legs at damping ×0.1); no braced run's torso ever went above
+  1.2 m.
+- The archived Kit clip of run 52's last checkpoint happens to be a seed that kneels and falls; the
+  viewer's recorded swings show the launches (11 of 12).
+
+### Takeaways
+
+- Controls earned their keep. Round 2's three changes each "cut falls by 20–35 points" until the control
+  did the same with no change at all; only tighter aim survived the comparison.
+- The crouch is a learned downswing, not a finish problem. Finish and posture terms bolted onto the
+  inherited swing moved the finish 0.54 → 0.62–0.69 m at best. Training the wrist golfer with braced
+  legs from iteration 0 gave a taller downswing and, with a fall penalty, the first real tall finishes
+  (48%, then 66%, knees straight). Fine-tuning reshapes what a policy already does; it rarely reinvents it.
+- Errant shots: `aim_sigma=7` and `strike_pow=1` each tighten their own dimension a little (direction
+  90th percentile 4.0° → 2.6°; smash 1.30 → 1.35), but both multiply the ball pay, so they belong on a
+  policy that already hits well.
+- Three ways a reward went wrong: a threshold nobody clears teaches nothing (`fall_height=0.75`);
+  multiplicative quality terms plus a fixed penalty on a weak policy make not swinging the best move
+  (run 51); and a finish measured only by torso height paid for flying (run 52, PhysX depenetration).

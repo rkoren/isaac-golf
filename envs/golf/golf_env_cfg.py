@@ -165,6 +165,7 @@ class GolfEnvCfg(DirectRLEnvCfg):
     finish_low: float = 0.6             # [m] torso height at the finish that earns nothing
     finish_high: float = 1.0            # [m] torso height that earns full finish credit
     aim_sigma: float = 0.0              # [deg] ball pay falls off with angle off the target line
+    strike_pow: float = 0.0             # ball pay x sweet-spot factor^p (1 = dead centre, as in smash)
 
     # obs scales
     dof_vel_scale: float = 0.1

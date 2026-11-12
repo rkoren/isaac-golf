@@ -259,8 +259,11 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
             "mean_top_time": top_time[hit].mean().item() if hit.any() else 0.0,
             "mean_offline_deg": offline[hit].abs().mean().item() if hit.any() else 0.0,
             "offline_bias_deg": offline[hit].mean().item() if hit.any() else 0.0,
+            "offline_p90_deg": offline[hit].abs().quantile(0.9).item() if hit.any() else 0.0,
+            "smash_p10": smash[smash > 0].quantile(0.1).item() if (smash > 0).any() else 0.0,
             "fell_rate": fell.float().mean().item(),
             "mean_finish_torso": finish_torso.mean().item(),
+            "tall_finish_rate": (finish_torso >= 0.9).float().mean().item(),
             "mean_max_ball_speed": max_ball.mean().item(),
             "best_ball_speed": max_ball.max().item(),
             "mean_max_club_speed": max_club.mean().item(),
@@ -286,6 +289,10 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
             f"lead hand {MPH * summary['mean_impact_hand_speed']:.1f} mph  "
             f"{summary['mean_impact_time']:.2f} s after address  "
             f"offline {summary['mean_offline_deg']:.0f} deg (mean {summary['offline_bias_deg']:+.0f}, + = right)"
+        )
+        print(
+            f"    spread: offline p90 {summary['offline_p90_deg']:.1f} deg  smash p10 {summary['smash_p10']:.2f}  "
+            f"finish torso >= 0.9 m {summary['tall_finish_rate']:.0%}"
         )
 
         episodes = []
