@@ -829,3 +829,93 @@ flight was worth more than a good shot, and the shots got worse still.
 - Three ways a reward went wrong: a threshold nobody clears teaches nothing (`fall_height=0.75`);
   multiplicative quality terms plus a fixed penalty on a weak policy make not swinging the best move
   (run 51); and a finish measured only by torso height paid for flying (run 52, PhysX depenetration).
+
+## Depenetration cap, a shot tracer, strike quality without the trap (2026-11-11, runs 57–58)
+
+### Depenetration cap 10 → 1 m/s
+
+`env.max_depenetration_velocity` (new, default 1.0; it was a hard-coded 10 in `golfer.py`) caps how fast
+PhysX pushes overlapping bodies apart. The loose-legs golfer had learned to use that push to launch itself
+(previous section). Before lowering it for every run:
+- **Resets:** across 512 jittered resets, no two limbs overlap at either cap (closest pair 5–8 mm apart).
+  The reset jitter (±0.05 rad on every joint) does push a foot or the club's toe up to ~3 cm into the
+  ground in some envs. At 10 m/s PhysX pops it out in one step; at 1 m/s it takes ~3 steps (50 ms), and
+  the first step's body speeds run a little higher (99th percentile 0.5–1.8 vs 0.3–0.6 m/s). Body speeds
+  right after the reset write are clean (≤ 0.13 m/s) at both.
+- **Run 55's swing** (braced, trained at 10 m/s), 64 swings per eval:
+
+| | cap 10, seed 42 | cap 1, seed 42 | cap 10, seed 7 | cap 1, seed 7 |
+|---|---|---|---|---|
+| Clubhead / ball (mph) | 72.8 / 75.6 | 72.6 / 71.9 | 72.5 / 73.2 | 72.5 / 73.9 |
+| Smash | 1.12 | 1.07 | 1.08 | 1.09 |
+| Fell | 25% | 42% | 33% | 30% |
+| Tall finishes | 66% | 47% | 61% | 61% |
+
+  Seed 42 looked like the cap hurt balance; seed 7 shows no difference at all. The seed alone moves a
+  64-swing fall rate by 8 points, so comparisons below use 256 swings.
+- `archive_run.py` replays each run at the cap it trained with (older runs: 10), so archived videos stay
+  faithful.
+
+### Shot tracer
+
+Rendered runs (GUI or `--video`) now draw env 0's ball path as a red line, grown step by step from the
+strike to the end of the episode and kept until the next strike (`env.tracer`; Isaac Lab
+`VisualizationMarkers`, created only when Kit is rendering, so headless training never sees it). Its
+radius grows with distance from the camera, so it reads as one width near and far. Two snags:
+- Kit's point instancer ignored a growing marker count (only the first segment ever showed), so the
+  tracer always draws 60 segments and shrinks the unused ones to zero.
+- The ball flew underground. Every launch points 6–10° down (run 55: vertical speed about −4 m/s at
+  32–37 m/s): the launch direction is 85% face normal, and the collider face has no loft (loft is visual
+  until Phase 2). The ball has no collider, so it sails through the turf. The tracer therefore draws the
+  path flattened to tee height: direction and speed are the sim's, height waits for the flight model.
+
+### Archive: progression videos only
+
+`archive_run.py` keeps `progression.mp4` and `swings.html` in `media/`; the single-checkpoint clips stay
+in the run's `videos/play/`. The 156 existing clips (70 MB) were removed from `media/` (they remain in git
+history), and run 35's partial archive got a progression from its 3 clips and an index row. `media/` went
+193 → 124 MB; the swing viewers (97 MB) are now most of it.
+
+### Strike quality: an additive bonus (runs 57–58)
+
+`env.strike_pow` multiplies the ball pay by sweet^p, so a poor strike pays a fraction of a good one; on a
+weak policy that is how run 51 fell into the stand-still trap. `env.strike_bonus` (new, off by default)
+only adds: pay × (1 + bonus × sweet), where sweet is 1 dead centre and falls off with distance from the
+sweet spot (the factor in smash). An off-centre strike pays what it always did, so swinging can never pay
+less than standing still. New logs, in training (`Metrics/strike_heel_cm`, `strike_high_cm` and their
+absolute values) and in `record_swings.py`: where on the face the ball was struck, + = toward the heel /
+above centre.
+
+Both runs from run 55's model_2195 at the new 1 m/s cap, 500 iterations, run 55's recipe (finish credit
+from 0.6 m, aim 15, stand/feet 10, fall 30): run 57 `strike_bonus1` (+ strike_bonus 1), run 58
+`scratch_control` (unchanged).
+
+Training log, mean of each 100-iteration block (stochastic actions):
+
+| | smash | heel (abs) | high (abs) | fell | clubhead |
+|---|---|---|---|---|---|
+| 57 bonus, first block → last | 1.18 → 1.16 | +0.6 (1.3) → +0.7 (1.4) cm | +0.2 (1.0) → +0.1 (1.1) cm | 37% → 42% | 71.9 → 70.7 |
+| 58 control, first block → last | 1.14 → 1.14 | +1.3 (1.7) → +1.1 (1.5) cm | −0.1 (1.0) → −0.1 (1.1) cm | 38% → 36% | 71.9 → 70.3 |
+
+Final checkpoints (model_2694), 256 swings each, mean actions:
+
+| | 57 strike bonus | 58 control |
+|---|---|---|
+| Clubhead / ball (mph) | 71.2 / 77.1 | 70.4 / 73.1 |
+| Smash (10th percentile) | **1.16** (1.02) | 1.11 (1.00) |
+| Strike on the face: heel (abs), high (abs) | **+1.1 (1.2)**, −0.4 (1.0) cm | +1.8 (1.8), −0.7 (1.1) cm |
+| Offline (90th percentile) | 2.0° (3.7°) | 1.5° (3.1°) |
+| Fell | 32% | **21%** |
+| Finish torso / tall finishes | 0.75 m / 54% | **0.83 m / 62%** |
+
+- The bonus does what it says on strikes: the heel miss shrinks 1.8 → 1.1 cm, smash +0.05, ball +4 mph,
+  and nothing like the stand-still trap.
+- Balance pays for it (falls +11 points, tall finishes −8), the same trade `strike_pow=0.5` made in
+  run 56. Likely cause: the bonus raises the whole ball pay (by about a third at this strike quality), so
+  the fixed fall penalty is worth relatively less. Untested fix: scale `fall_penalty` up with it.
+- Where the smash goes: in the control the misses sit toward the heel (+1.8 cm, all on that side) and
+  scatter about 1 cm up and down. With the sweet spot falling off over 2.2 cm toe-heel but 1.1 cm
+  vertically, the two cost about the same. The scatter remains with mean actions: it comes from the reset
+  jitter feeding a chaotic swing, not from exploration noise.
+- The control at the new cap keeps improving on balance: 21% falls, 62% tall finishes (run 55: 25–33%,
+  61–66% at 64 swings).

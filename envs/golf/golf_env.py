@@ -7,11 +7,12 @@ from collections.abc import Sequence
 import torch
 
 from isaaclab.envs import DirectRLEnv
+from isaaclab.markers import VisualizationMarkers
 from isaaclab.utils import index_fill_
 from isaaclab.utils.math import normalize, quat_apply, quat_apply_inverse, sample_uniform, scale_transform
 from isaaclab.utils.string import resolve_matching_names_values
 
-from .golf_env_cfg import MPH, GolfEnvCfg, apply_body, apply_club
+from .golf_env_cfg import MPH, TRACER_CFG, TRACER_WIDTH, GolfEnvCfg, apply_body, apply_club
 from .golfer import CLUB_BODY, LEAD_HAND, TRAIL_HAND
 from .shapes import body_shapes
 
@@ -58,6 +59,7 @@ class GolfEnv(DirectRLEnv):
         self.launch_speed = torch.zeros(self.num_envs, device=self.device)
         self.smash = torch.zeros(self.num_envs, device=self.device)
         self.sweet = torch.zeros(self.num_envs, device=self.device)
+        self.strike_off = torch.zeros(self.num_envs, 2, device=self.device)  # ball on the face: heel +, high + [m]
         self.backwards = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self.offline = torch.zeros(self.num_envs, device=self.device)
         self.new_hit = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
@@ -80,6 +82,15 @@ class GolfEnv(DirectRLEnv):
         self.prev_club_pos = self.club_pos.clone()
         self.prev_club_quat = self.club_quat.clone()
         self.prev_ball_pos = self.ball_pos.clone()
+
+        # env 0's last shot, drawn until its next strike
+        self.tracer, self.trace = None, []
+        if self.cfg.tracer and (self.sim.has_gui or self.sim.has_offscreen_render):
+            self.tracer = VisualizationMarkers(TRACER_CFG)
+            self.tracer.set_visibility(False)
+            eye = getattr(self.cfg.sim.default_visualizer_cfg, "eye", None) or (0.0, -3.0, 1.4)
+            self.tracer_eye = torch.tensor(eye, device=self.device) + self.scene.env_origins[0]
+
         width = self._get_observations()["policy"].shape[-1]
         assert width == self.cfg.observation_space, (
             f"observation_space={self.cfg.observation_space} but obs is {width} wide"
@@ -171,6 +182,7 @@ class GolfEnv(DirectRLEnv):
         self.launch_speed = torch.where(hit, speed, self.launch_speed)
         self.smash = torch.where(hit, smash, self.smash)
         self.sweet = torch.where(hit, sweet * (side > 0), self.sweet)
+        self.strike_off = torch.where(hit.unsqueeze(-1), off[:, 1:], self.strike_off)
         # backwards: back of the head, or the ball heading away from the target
         away = (side < 0) | ((direction * self.target_dir).sum(-1) < 0)
         self.backwards = torch.where(hit, away, self.backwards)
@@ -192,6 +204,32 @@ class GolfEnv(DirectRLEnv):
         self.prev_club_pos.copy_(self.club_pos)
         self.prev_club_quat.copy_(self.club_quat)
         self.prev_ball_pos.copy_(self.ball_pos)
+
+    def _draw_tracer(self):
+        """Grow a line along env 0's ball path from the strike until the episode ends."""
+        if self.new_hit[0]:
+            self.trace = [self.ball_pos[0].clone()]
+        elif self.impacted[0] and len(self.trace) <= self.cfg.post_impact_steps:
+            # flat at tee height: no loft or flight model yet, so the launch's vertical angle means nothing
+            p = self.ball_pos[0].clone()
+            p[2] = self.trace[0][2]
+            self.trace.append(p)
+        if len(self.trace) < 2:
+            self.tracer.set_visibility(False)
+            return
+        # fixed segment count (Kit's instancer misses a changing one); unused segments get zero scale
+        n = self.cfg.post_impact_steps
+        pts = torch.stack(self.trace + [self.trace[-1]] * (n + 1 - len(self.trace)))
+        seg = pts[1:] - pts[:-1]
+        length = torch.linalg.norm(seg, dim=-1)
+        d = seg / length.clamp_min(1e-6).unsqueeze(-1)
+        d[length < 1e-6] = torch.tensor([0.0, 0.0, 1.0], device=self.device)
+        # rotate the cylinder's +z onto each segment
+        quat = normalize(torch.stack([-d[:, 1], d[:, 0], torch.zeros_like(length), 1.0 + d[:, 2]], dim=-1))
+        mid = 0.5 * (pts[1:] + pts[:-1])
+        r = TRACER_WIDTH * torch.linalg.norm(mid - self.tracer_eye, dim=-1) * (length > 1e-6)
+        self.tracer.visualize(translations=mid, orientations=quat, scales=torch.stack([r, r, length], dim=-1))
+        self.tracer.set_visibility(True)
 
     def _get_observations(self) -> dict[str, torch.Tensor]:
         obs = torch.cat(
@@ -221,6 +259,8 @@ class GolfEnv(DirectRLEnv):
         if self.cfg.strike_pow > 0:
             # strike quality: an off-centre hit pays less than smash alone takes off
             ball_speed = ball_speed * self.sweet**self.cfg.strike_pow
+        if self.cfg.strike_bonus > 0:
+            ball_speed = ball_speed * (1.0 + self.cfg.strike_bonus * self.sweet)
         backwards = self.cfg.backwards_penalty * (self.new_hit & self.backwards).float() / self.step_dt
         gained = torch.relu(ball_speed - self.max_ball_speed)
         self.max_ball_speed = torch.maximum(self.max_ball_speed, ball_speed)
@@ -304,6 +344,8 @@ class GolfEnv(DirectRLEnv):
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         self._compute_intermediate_values()
         self._update_contact()
+        if self.tracer is not None:
+            self._draw_tracer()
         # no fall termination: falling is penalised, not ended
         died = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         done = (self.episode_length_buf >= self.max_episode_length) | (
@@ -326,6 +368,11 @@ class GolfEnv(DirectRLEnv):
             log["Metrics/impact_hand_speed_mph"] = MPH * self.impact_hand_speed[env_ids][struck].mean()
             log["Metrics/impact_time"] = self.impact_time[env_ids][struck].mean()
             log["Metrics/smash"] = self.smash[env_ids][struck].mean()
+            off = 100.0 * self.strike_off[env_ids][struck]
+            log["Metrics/strike_heel_cm"] = off[:, 0].mean()
+            log["Metrics/strike_high_cm"] = off[:, 1].mean()
+            log["Metrics/strike_heel_abs_cm"] = off[:, 0].abs().mean()
+            log["Metrics/strike_high_abs_cm"] = off[:, 1].abs().mean()
             log["Metrics/backwards_rate"] = self.backwards[env_ids][struck].float().mean()
             log["Metrics/offline_deg"] = self.offline[env_ids][struck].abs().mean()
             log["Metrics/backswing_m"] = self.top_dist[env_ids][struck].mean()
@@ -345,6 +392,7 @@ class GolfEnv(DirectRLEnv):
         index_fill_(self.launch_speed, env_ids, 0.0)
         index_fill_(self.smash, env_ids, 0.0)
         index_fill_(self.sweet, env_ids, 0.0)
+        index_fill_(self.strike_off, env_ids, 0.0)
         index_fill_(self.backwards, env_ids, False)
         index_fill_(self.offline, env_ids, 0.0)
         index_fill_(self.fallen, env_ids, False)

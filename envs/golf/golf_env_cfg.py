@@ -8,6 +8,7 @@ from isaaclab_physx.physics import PhysxCfg
 import isaaclab.sim as sim_utils
 from isaaclab.assets import ArticulationCfg, AssetBaseCfg, RigidObjectCfg
 from isaaclab.envs import DirectRLEnvCfg
+from isaaclab.markers import VisualizationMarkersCfg
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim import SimulationCfg
 from isaaclab.utils import configclass, replace
@@ -38,6 +39,16 @@ MUSCLE_VMAX = {
 GRASS = (0.30, 0.62, 0.22)
 BALL_COLOR = (1.0, 0.1, 0.65)
 BALL_GLOW = (1.6, 0.1, 1.0)
+
+# shot tracer: unit cylinders stretched between ball positions (rendered runs only)
+TRACER_CFG = VisualizationMarkersCfg(
+    prim_path="/Visuals/ShotTracer",
+    markers={"seg": sim_utils.CylinderCfg(
+        radius=1.0, height=1.0, axis="Z",
+        visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.9, 0.04, 0.02), emissive_color=(0.9, 0.03, 0.0)),
+    )},
+)
+TRACER_WIDTH = 0.005  # [m] radius per metre from the camera, so it reads the same width near and far
 
 
 @configclass
@@ -119,8 +130,10 @@ class GolfEnvCfg(DirectRLEnvCfg):
     damping_scale: float = 1.0          # joint damping
     leg_damping_scale: float | None = None  # hips, knees, ankles; None = damping_scale
     wrist: bool = False                 # lead wrist hinge between hand and club (22 actions)
+    max_depenetration_velocity: float = 1.0  # [m/s] physx overlap push-out; 10 let the golfer launch itself
     club: str = "driver"                # key into clubs.py; apply_club() sets everything club-specific
     ball_pos: tuple[float, float, float] = BALL_POS
+    tracer: bool = True                 # shot tracer on env 0 when rendering (GUI or --video); nothing headless
     # aim based on golfer (left for a righty)
     target_dir: tuple[float, float, float] = (0.0, 1.0, 0.0)
 
@@ -166,6 +179,7 @@ class GolfEnvCfg(DirectRLEnvCfg):
     finish_high: float = 1.0            # [m] torso height that earns full finish credit
     aim_sigma: float = 0.0              # [deg] ball pay falls off with angle off the target line
     strike_pow: float = 0.0             # ball pay x sweet-spot factor^p (1 = dead centre, as in smash)
+    strike_bonus: float = 0.0           # ball pay x (1 + bonus x sweet-spot factor): only adds, so no stand-still trap
 
     # obs scales
     dof_vel_scale: float = 0.1
@@ -193,7 +207,8 @@ def apply_club(cfg: GolfEnvCfg) -> None:
 
 
 def apply_body(cfg: GolfEnvCfg) -> None:
-    """Joint damping, and the lead wrist's actuator and spaces when cfg.wrist."""
+    """Joint damping, depenetration cap, and the lead wrist's actuator and spaces when cfg.wrist."""
+    cfg.scene.robot.spawn.rigid_props.max_depenetration_velocity = cfg.max_depenetration_velocity
     act = cfg.scene.robot.actuators["body"]
     legs = cfg.damping_scale if cfg.leg_damping_scale is None else cfg.leg_damping_scale
     act.damping = {

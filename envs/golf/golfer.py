@@ -37,7 +37,7 @@ GOLFER_CFG = ArticulationCfg(
     spawn=sim_utils.UsdFileCfg(
         usd_path=golfer_usd("driver"),
         rigid_props=PhysxRigidBodyCfg(
-            disable_gravity=None, max_depenetration_velocity=10.0, enable_gyroscopic_forces=True
+            disable_gravity=None, max_depenetration_velocity=1.0, enable_gyroscopic_forces=True
         ),
         articulation_props=[
             PhysxArticulationCfg(

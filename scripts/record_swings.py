@@ -154,6 +154,7 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
         backwards = torch.zeros(N, dtype=torch.bool, device=u.device)
         impact = torch.zeros(N, 3, device=u.device)  # club speed, lead hand speed, time since address
         offline = torch.zeros(N, device=u.device)  # launch angle off the target line [deg], + = right
+        strike_off = torch.zeros(N, 2, device=u.device)  # ball on the face: heel +, high + [m]
 
         # reset inside inference mode too, or the next checkpoint's reset fails
         with torch.inference_mode():
@@ -188,6 +189,8 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
                 impact = torch.where(alive[:, None], now, impact)
                 if hasattr(u, "offline"):
                     offline = torch.where(alive, u.offline, offline)
+                if hasattr(u, "strike_off"):
+                    strike_off = torch.where(alive[:, None], u.strike_off, strike_off)
                 sc[alive, t, :6] = row[alive]
                 length += alive.long()
                 if t == T - 1:
@@ -261,6 +264,10 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
             "offline_bias_deg": offline[hit].mean().item() if hit.any() else 0.0,
             "offline_p90_deg": offline[hit].abs().quantile(0.9).item() if hit.any() else 0.0,
             "smash_p10": smash[smash > 0].quantile(0.1).item() if (smash > 0).any() else 0.0,
+            "strike_heel_m": strike_off[hit, 0].mean().item() if hit.any() else 0.0,
+            "strike_high_m": strike_off[hit, 1].mean().item() if hit.any() else 0.0,
+            "strike_heel_abs_m": strike_off[hit, 0].abs().mean().item() if hit.any() else 0.0,
+            "strike_high_abs_m": strike_off[hit, 1].abs().mean().item() if hit.any() else 0.0,
             "fell_rate": fell.float().mean().item(),
             "mean_finish_torso": finish_torso.mean().item(),
             "tall_finish_rate": (finish_torso >= 0.9).float().mean().item(),
@@ -293,6 +300,11 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
         print(
             f"    spread: offline p90 {summary['offline_p90_deg']:.1f} deg  smash p10 {summary['smash_p10']:.2f}  "
             f"finish torso >= 0.9 m {summary['tall_finish_rate']:.0%}"
+        )
+        print(
+            f"    strike on the face: heel {100 * summary['strike_heel_m']:+.1f} cm "
+            f"(|{100 * summary['strike_heel_abs_m']:.1f}|), high {100 * summary['strike_high_m']:+.1f} cm "
+            f"(|{100 * summary['strike_high_abs_m']:.1f}|)"
         )
 
         episodes = []

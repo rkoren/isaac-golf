@@ -1,4 +1,4 @@
-"""Archive a run's swings into media/
+"""Archive a run's swings into media/: progression.mp4 (checkpoints side by side) and the swing viewer
 """
 
 from __future__ import annotations
@@ -39,8 +39,14 @@ out.mkdir(parents=True, exist_ok=True)
 play_dir = run / "videos" / "play"
 # replay with the run's club and body (reward-only settings don't change the swing)
 env_yaml = (run / "params" / "env.yaml").read_text(encoding="utf-8") if (run / "params" / "env.yaml").exists() else ""
-REPLAY = ("club", "wrist", "muscle", "muscle_k", "damping_scale", "leg_damping_scale", "impact_arm_dist")
+REPLAY = ("club", "wrist", "muscle", "muscle_k", "damping_scale", "leg_damping_scale", "impact_arm_dist",
+          "max_depenetration_velocity")
 OVERRIDES = [f"env.{k}={m.group(1)}" for k in REPLAY if (m := re.search(rf"^{k}: (\S+)", env_yaml, re.M))]
+# runs before the knob only have the robot's nested value
+if not any("max_depenetration_velocity" in o for o in OVERRIDES) and (
+    m := re.search(r"^\s+max_depenetration_velocity: ([\d.]+)", env_yaml, re.M)
+):
+    OVERRIDES.append(f"env.max_depenetration_velocity={m.group(1)}")
 print(f"[archive] replay overrides: {OVERRIDES}")
 
 
@@ -60,10 +66,8 @@ for c in ckpts:
         print(f"[archive] no clip for {c.stem}, skipping")
         continue
 
-    src = made[0] if args.existing else made[-1]
-    dst = out / f"{c.stem}.mp4"
-    shutil.copy2(src, dst)
-    clips.append((iteration(c), dst))
+    # only the stacked progression is kept; single clips stay in the run's videos/play/
+    clips.append((iteration(c), made[0] if args.existing else made[-1]))
 
 if clips:
     import imageio_ffmpeg
