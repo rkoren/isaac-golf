@@ -40,7 +40,7 @@ play_dir = run / "videos" / "play"
 # replay with the run's club and body (reward-only settings don't change the swing)
 env_yaml = (run / "params" / "env.yaml").read_text(encoding="utf-8") if (run / "params" / "env.yaml").exists() else ""
 REPLAY = ("club", "wrist", "muscle", "muscle_k", "damping_scale", "leg_damping_scale", "impact_arm_dist",
-          "max_depenetration_velocity")
+          "max_depenetration_velocity", "motor_noise", "motor_noise_tau")
 OVERRIDES = [f"env.{k}={m.group(1)}" for k in REPLAY if (m := re.search(rf"^{k}: (\S+)", env_yaml, re.M))]
 # runs before the knob only have the robot's nested value
 if not any("max_depenetration_velocity" in o for o in OVERRIDES) and (

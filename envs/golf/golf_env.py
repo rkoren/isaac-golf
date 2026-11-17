@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 
 import torch
@@ -62,8 +63,14 @@ class GolfEnv(DirectRLEnv):
         self.strike_off = torch.zeros(self.num_envs, 2, device=self.device)  # ball on the face: heel +, high + [m]
         self.backwards = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self.offline = torch.zeros(self.num_envs, device=self.device)
+        self.face_deg = torch.zeros(self.num_envs, device=self.device)
+        self.path_deg = torch.zeros(self.num_envs, device=self.device)
+        self.top_time = torch.zeros(self.num_envs, device=self.device)
         self.new_hit = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self.fallen = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        # motor noise state per joint, correlated over motor_noise_tau
+        self.motor_n = torch.zeros(self.num_envs, self.robot.num_joints, device=self.device)
+        self.motor_rho = math.exp(-self.cfg.sim.dt / self.cfg.motor_noise_tau)
 
         box = next(s for s in body_shapes(self.cfg.scene.robot.spawn.usd_path)[CLUB_BODY] if s[0] == "box")
         self.head_half = torch.tensor(
@@ -78,6 +85,7 @@ class GolfEnv(DirectRLEnv):
 
         self._compute_intermediate_values()
         self.feet_home = self.feet_xy.clone()  # address foot positions
+        self.feet_home_z = self.feet_z.clone()
 
         self.prev_club_pos = self.club_pos.clone()
         self.prev_club_quat = self.club_quat.clone()
@@ -109,6 +117,11 @@ class GolfEnv(DirectRLEnv):
             capped = forces * (1.0 - x) / (1.0 + x / self.cfg.muscle_k)
             self.muscle_frac = capped.abs().sum(-1) / forces.abs().sum(-1).clamp_min(1e-6)
             forces = capped
+        if self.cfg.motor_noise > 0:
+            # signal-dependent noise: torque error grows with the torque (Harris & Wolpert)
+            rho = self.motor_rho
+            self.motor_n.mul_(rho).add_(torch.randn_like(self.motor_n), alpha=math.sqrt(1.0 - rho * rho))
+            forces = forces * (1.0 + self.cfg.motor_noise * self.motor_n)
         self.robot.actuators.target_command.set_effort_index(value=forces)
 
     def _compute_intermediate_values(self):
@@ -127,6 +140,7 @@ class GolfEnv(DirectRLEnv):
         self.lead_pos = self.robot.data.body_link_pos_w.torch[:, self._lead_idx]
         self.trail_pos = self.robot.data.body_link_pos_w.torch[:, self._trail_idx]
         self.feet_xy = self.robot.data.body_link_pos_w.torch[:, self._feet_idx, :2]
+        self.feet_z = self.robot.data.body_link_pos_w.torch[:, self._feet_idx, 2]
 
         self.ball_pos = self.ball.data.root_pos_w.torch
         self.ball_vel = self.ball.data.root_lin_vel_w.torch
@@ -186,13 +200,15 @@ class GolfEnv(DirectRLEnv):
         # backwards: back of the head, or the ball heading away from the target
         away = (side < 0) | ((direction * self.target_dir).sum(-1) < 0)
         self.backwards = torch.where(hit, away, self.backwards)
-        # horizontal launch angle off the target line [deg], + = right of target
-        flat, tgt = direction[:, :2], self.target_dir[:, :2]
-        offline = torch.rad2deg(torch.atan2(flat[:, 0] * tgt[:, 1] - flat[:, 1] * tgt[:, 0], (flat * tgt).sum(-1)))
-        self.offline = torch.where(hit, offline, self.offline)
+        # launch, face, and path
+        self.offline = torch.where(hit, self._off_target_deg(direction), self.offline)
+        self.face_deg = torch.where(hit, self._off_target_deg(normal), self.face_deg)
+        self.path_deg = torch.where(hit, self._off_target_deg(self.club_vel), self.path_deg)
         self.new_hit = hit
 
         self.armed |= self.club_ball_dist > self.cfg.impact_arm_dist
+        new_top = ~(self.impacted | hit) & (self.club_ball_dist > self.top_dist)
+        self.top_time = torch.where(new_top, self.episode_length_buf * self.step_dt, self.top_time)
         self.top_dist = torch.where(self.impacted | hit, self.top_dist, torch.maximum(self.top_dist, self.club_ball_dist))
         self.impact_speed = torch.where(hit, self.club_speed, self.impact_speed)
         hand_speed = torch.linalg.norm(self.robot.data.body_link_lin_vel_w.torch[:, self._lead_idx], dim=-1)
@@ -204,6 +220,10 @@ class GolfEnv(DirectRLEnv):
         self.prev_club_pos.copy_(self.club_pos)
         self.prev_club_quat.copy_(self.club_quat)
         self.prev_ball_pos.copy_(self.ball_pos)
+
+    def _off_target_deg(self, v: torch.Tensor) -> torch.Tensor:
+        flat, tgt = v[:, :2], self.target_dir[:, :2]
+        return torch.rad2deg(torch.atan2(flat[:, 0] * tgt[:, 1] - flat[:, 1] * tgt[:, 0], (flat * tgt).sum(-1)))
 
     def _draw_tracer(self):
         """Grow a line along env 0's ball path from the strike until the episode ends."""
@@ -272,6 +292,8 @@ class GolfEnv(DirectRLEnv):
         upright = torch.clamp((self.torso_pos[:, 2] - lo) / (hi - lo), 0.0, 1.0)
         finish = self.cfg.ball_speed_weight * frac * ball_speed * upright * finishing / self.step_dt
         ball_reward = (1.0 - frac) * ball_reward + finish
+        # hold the finish: pays every moment upright after impact, so a later fall already earns more
+        hold = self.cfg.hold_weight * upright * self.impacted.float()
 
         # 2. wind up, capped
         capped = torch.clamp(self.club_ball_dist, max=self.cfg.backswing_cap)
@@ -289,6 +311,9 @@ class GolfEnv(DirectRLEnv):
         stand = self.cfg.stand_weight * torch.relu(self.cfg.stand_height - self.torso_pos[:, 2])
         slip = torch.relu(torch.linalg.norm(self.feet_xy - self.feet_home, dim=-1) - self.cfg.feet_slip_free)
         feet = self.cfg.feet_slip_weight * slip.sum(-1)
+
+        lead_lift = self.feet_z[:, 0] - self.feet_home_z[:, 0]
+        lead = self.cfg.lead_foot_weight * (slip[:, 0] + torch.relu(lead_lift - self.cfg.lead_foot_lift_free))
         new_fall = (self.torso_pos[:, 2] < self.cfg.fall_height) & ~self.fallen
         self.fallen |= new_fall
         fall = self.cfg.fall_penalty * new_fall.float() / self.step_dt
@@ -309,17 +334,21 @@ class GolfEnv(DirectRLEnv):
         log = self.extras.setdefault("log", {})
         log["Reward/ball_speed"] = ball_reward.mean()
         log["Reward/finish"] = finish.mean()
+        log["Reward/hold"] = hold.mean()
         log["Reward/backswing"] = wind.mean()
         log["Reward/clubhead_speed"] = speed.mean()
         log["Reward/trail_hand"] = -trail.mean()
         log["Reward/stand"] = -stand.mean()
         log["Reward/feet"] = -feet.mean()
+        log["Reward/lead_foot"] = -lead.mean()
         log["Reward/fall"] = -fall.mean()
         log["Reward/backwards"] = -backwards.mean()
         log["Reward/actions"] = -self.cfg.actions_cost_scale * actions_cost.mean()
         log["Reward/energy"] = -self.cfg.energy_cost_scale * energy_cost.mean()
         log["Reward/limits"] = -self.cfg.joint_pos_limits_cost_scale * limit_cost.mean()
         log["Metrics/torso_height"] = self.torso_pos[:, 2].mean()
+        if self.cfg.motor_noise > 0:
+            log["Metrics/motor_noise_frac"] = (self.cfg.motor_noise * self.motor_n).std()
         if self.cfg.muscle:
             log["Metrics/muscle_torque_frac"] = self.muscle_frac.mean()
         log["Metrics/club_ball_dist"] = self.club_ball_dist.mean()
@@ -329,11 +358,13 @@ class GolfEnv(DirectRLEnv):
         # per-second terms, scaled by step_dt
         return self.step_dt * (
             ball_reward
+            + hold
             + wind
             + speed
             - trail
             - stand
             - feet
+            - lead
             - fall
             - backwards
             - self.cfg.actions_cost_scale * actions_cost
@@ -346,8 +377,10 @@ class GolfEnv(DirectRLEnv):
         self._update_contact()
         if self.tracer is not None:
             self._draw_tracer()
-        # no fall termination: falling is penalised, not ended
+        # falling is penalised; ended too only with fall_terminate (once standing is rewarded)
         died = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        if self.cfg.fall_terminate:
+            died = self.torso_pos[:, 2] < self.cfg.fall_height
         done = (self.episode_length_buf >= self.max_episode_length) | (
             self.post_impact > self.cfg.post_impact_steps
         )
@@ -361,6 +394,9 @@ class GolfEnv(DirectRLEnv):
         log["Metrics/contact_rate"] = self.impacted[env_ids].float().mean()
         log["Metrics/min_club_ball_dist"] = self.min_dist[env_ids].mean()
         log["Metrics/fell_rate"] = self.fallen[env_ids].float().mean()
+        log["Metrics/lead_foot_moved_m"] = torch.linalg.norm(
+            self.feet_xy[env_ids, 0] - self.feet_home[env_ids, 0], dim=-1
+        ).mean()
         struck = self.impacted[env_ids]
         if struck.any():
             # at the strike: human-plausibility checks
@@ -376,6 +412,13 @@ class GolfEnv(DirectRLEnv):
             log["Metrics/backwards_rate"] = self.backwards[env_ids][struck].float().mean()
             log["Metrics/offline_deg"] = self.offline[env_ids][struck].abs().mean()
             log["Metrics/backswing_m"] = self.top_dist[env_ids][struck].mean()
+            log["Metrics/top_time"] = self.top_time[env_ids][struck].mean()
+            log["Metrics/downswing_time"] = (self.impact_time - self.top_time)[env_ids][struck].mean()
+            face, path = self.face_deg[env_ids][struck], self.path_deg[env_ids][struck]
+            log["Metrics/face_deg"] = face.mean()
+            log["Metrics/path_deg"] = path.mean()
+            log["Metrics/face_to_path_deg"] = (face - path).mean()
+            log["Metrics/face_to_path_abs_deg"] = (face - path).abs().mean()
 
         super()._reset_idx(env_ids)
         index_fill_(self.actions, env_ids, 0.0)
@@ -395,6 +438,9 @@ class GolfEnv(DirectRLEnv):
         index_fill_(self.strike_off, env_ids, 0.0)
         index_fill_(self.backwards, env_ids, False)
         index_fill_(self.offline, env_ids, 0.0)
+        index_fill_(self.face_deg, env_ids, 0.0)
+        index_fill_(self.path_deg, env_ids, 0.0)
+        index_fill_(self.top_time, env_ids, 0.0)
         index_fill_(self.fallen, env_ids, False)
 
         # golfer back to the address pose, offset into its env
@@ -419,6 +465,9 @@ class GolfEnv(DirectRLEnv):
 
         self._compute_intermediate_values()
         self.feet_home[env_ids] = self.feet_xy[env_ids]
+        self.feet_home_z[env_ids] = self.feet_z[env_ids]
+        if self.cfg.motor_noise > 0:
+            self.motor_n[env_ids] = torch.randn_like(self.motor_n[env_ids])
         self.prev_club_pos[env_ids] = self.club_pos[env_ids]
         self.prev_club_quat[env_ids] = self.club_quat[env_ids]
         self.prev_ball_pos[env_ids] = self.ball_pos[env_ids]

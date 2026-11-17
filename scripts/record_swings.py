@@ -155,6 +155,8 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
         impact = torch.zeros(N, 3, device=u.device)  # club speed, lead hand speed, time since address
         offline = torch.zeros(N, device=u.device)  # launch angle off the target line [deg], + = right
         strike_off = torch.zeros(N, 2, device=u.device)  # ball on the face: heel +, high + [m]
+        face_path = torch.zeros(N, 2, device=u.device)  # face and path angles off the target line [deg], + = right
+        lead_moved = torch.zeros(N, device=u.device)  # lead foot's distance from its address spot [m]
 
         # reset inside inference mode too, or the next checkpoint's reset fails
         with torch.inference_mode():
@@ -191,6 +193,10 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
                     offline = torch.where(alive, u.offline, offline)
                 if hasattr(u, "strike_off"):
                     strike_off = torch.where(alive[:, None], u.strike_off, strike_off)
+                if hasattr(u, "face_deg"):
+                    face_path = torch.where(alive[:, None], torch.stack([u.face_deg, u.path_deg], -1), face_path)
+                    moved_now = torch.linalg.norm(u.feet_xy[:, 0] - u.feet_home[:, 0], dim=-1)
+                    lead_moved = torch.where(alive, moved_now, lead_moved)
                 sc[alive, t, :6] = row[alive]
                 length += alive.long()
                 if t == T - 1:
@@ -213,6 +219,9 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
         hit_frame = torch.where(hit, (sc[..., 5] > 0.5).float().argmax(1), -1)
         ret = sc[..., 6].sum(1)
         fell = min_torso < 0.6
+        # first frame below 0.6 m after impact, for how long the finish holds
+        down = valid & (sc[..., 3] < 0.6) & (idx >= hit_frame[:, None]) & hit[:, None]
+        fall_after = torch.where(down.any(1), (down.float().argmax(1) - hit_frame).float() * u.step_dt, float("nan"))
         finish_torso = sc[torch.arange(N, device=u.device), (length - 1).clamp_min(0), 3]  # kneeling shows here, not in fell
         # top of the backswing: farthest the head gets from the ball before impact
         before = valid & ((idx < hit_frame[:, None]) | ~hit[:, None])
@@ -245,6 +254,11 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
         n = min(args.keep, N)
         picks = sorted({order[round(j * (N - 1) / max(n - 1, 1))] for j in range(n)}, key=order.index)
 
+        # shot shape for a right-hander from face-to-path
+        ftp = face_path[hit, 0] - face_path[hit, 1]
+        bands = {"hook": ftp < -6, "draw": (ftp >= -6) & (ftp < -2), "straight": ftp.abs() <= 2,
+                 "fade": (ftp > 2) & (ftp <= 6), "slice": ftp > 6}
+        downswing = impact[hit, 2] - top_time[hit]
         summary = {
             "contact_rate": hit.float().mean().item(),
             "moved_rate": moved.any(1).float().mean().item(),
@@ -268,7 +282,16 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
             "strike_high_m": strike_off[hit, 1].mean().item() if hit.any() else 0.0,
             "strike_heel_abs_m": strike_off[hit, 0].abs().mean().item() if hit.any() else 0.0,
             "strike_high_abs_m": strike_off[hit, 1].abs().mean().item() if hit.any() else 0.0,
+            "mean_face_deg": face_path[hit, 0].mean().item() if hit.any() else 0.0,
+            "mean_path_deg": face_path[hit, 1].mean().item() if hit.any() else 0.0,
+            "mean_face_to_path_deg": ftp.mean().item() if hit.any() else 0.0,
+            "face_to_path_abs_deg": ftp.abs().mean().item() if hit.any() else 0.0,
+            "shot_shapes": {k: v.float().mean().item() for k, v in bands.items()} if hit.any() else {},
+            "mean_downswing_time": downswing.mean().item() if hit.any() else 0.0,
+            "tempo_ratio": (top_time[hit].mean() / downswing.mean().clamp_min(1e-6)).item() if hit.any() else 0.0,
+            "mean_lead_foot_moved": lead_moved.mean().item(),
             "fell_rate": fell.float().mean().item(),
+            "median_fall_after_impact": fall_after.nanmedian().item() if down.any() else 0.0,
             "mean_finish_torso": finish_torso.mean().item(),
             "tall_finish_rate": (finish_torso >= 0.9).float().mean().item(),
             "mean_max_ball_speed": max_ball.mean().item(),
@@ -299,12 +322,22 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
         )
         print(
             f"    spread: offline p90 {summary['offline_p90_deg']:.1f} deg  smash p10 {summary['smash_p10']:.2f}  "
-            f"finish torso >= 0.9 m {summary['tall_finish_rate']:.0%}"
+            f"finish torso >= 0.9 m {summary['tall_finish_rate']:.0%}  "
+            f"median fall {summary['median_fall_after_impact']:.2f} s after impact"
         )
         print(
             f"    strike on the face: heel {100 * summary['strike_heel_m']:+.1f} cm "
             f"(|{100 * summary['strike_heel_abs_m']:.1f}|), high {100 * summary['strike_high_m']:+.1f} cm "
             f"(|{100 * summary['strike_high_abs_m']:.1f}|)"
+        )
+        shapes = "  ".join(f"{k} {v:.0%}" for k, v in summary["shot_shapes"].items())
+        print(
+            f"    face {summary['mean_face_deg']:+.1f} deg  path {summary['mean_path_deg']:+.1f} deg  "
+            f"face-to-path {summary['mean_face_to_path_deg']:+.1f} (|{summary['face_to_path_abs_deg']:.1f}|)  {shapes}"
+        )
+        print(
+            f"    tempo: top {summary['mean_top_time']:.2f} s, downswing {summary['mean_downswing_time']:.2f} s "
+            f"({summary['tempo_ratio']:.1f}:1)  lead foot moved {summary['mean_lead_foot_moved']:.2f} m"
         )
 
         episodes = []

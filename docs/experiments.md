@@ -995,3 +995,146 @@ for 500 iterations, against run 64 (same parent, penalty and length, std left at
   `entropy_coef=0`, so a policy keeps the noise it started with (`init_std=1.0`) unless it is set by hand.
 - Falls are late, slow sit-backs at the edge of the 1 s finish window; a longer window would see the ones
   that cross after it.
+
+## Feet, tempo and curve (2026-11-16, runs 67–72)
+
+From run 65 (fall 40, action std 0.25). Goals: keep forcing balance, plant the lead foot, and get a
+longer, more gradual swing. Every run resumes run 65's `model_3692` for 500 iterations on run 65's recipe;
+256 swings per eval, mean actions.
+
+### New measurements
+
+- **Curve.** The sim's ball never curves: launch = 85% face + 15% path, no spin, gravity off. To see what
+  a real ball would do, the env now logs the face and path angles at impact (`Metrics/face_deg`,
+  `path_deg`, `face_to_path_deg`; + = right of target), and `record_swings.py` labels each shot from
+  face-to-path for a right-hander (approximate bands: ±2° straight, 2–6° fade/draw, beyond that
+  slice/hook). Run 65: face +7°, path −8° to −9° (out-to-in), face-to-path +15° to +16°, so every shot
+  is a slice. The start line (+4°) looks nearly straight only because nothing makes it curve.
+- **Tempo.** `Metrics/top_time` and `downswing_time` (and the ratio in `record_swings.py`): run 65 tops
+  out 0.22 s after address and strikes 0.11 s later (2:1 over a third of a second; a tour golfer is ~3:1
+  over ~1.2 s).
+- **Lead foot.** `Metrics/lead_foot_moved_m`: run 65's lead foot ends 0.6 m from its address spot.
+  It stays planted until ~0.2 s after impact, then the lead leg kicks up (0.1–0.55 m) and out (0.3–1.0 m)
+  through the follow-through; ground friction is already 1.0, so it's a move, not a slide. Most likely
+  a counterbalance against the club's momentum.
+
+### New knobs (off by default)
+
+- `env.lead_foot_weight`: a per-second penalty on the lead foot sliding beyond `feet_slip_free` or rising
+  more than `lead_foot_lift_free` (3 cm). The trail foot keeps only the horizontal slide penalty, so it
+  may lift and pivot as in a real finish.
+- `env.motor_noise`: signal-dependent motor noise. Each joint's torque gets an error whose standard
+  deviation is that fraction of the torque, correlated over `env.motor_noise_tau` (50 ms) so it moves
+  the body instead of averaging out within a step. This is the standard model of human motor variability
+  (Harris & Wolpert): forceful, abrupt movement is noisier, so the hope was a smoother, slower swing. It
+  is part of the world, active in evaluation too. With all knobs off the env is bit-identical to before
+  (an A/B eval of run 65 matched line for line, after making the noise draw random numbers only when on).
+
+### Rounds 1–2
+
+| From run 65, +500 iters | 67: control | 68: lead foot 50 | 69: noise 0.1 (on / off) | 70: noise 0.2 (on / off) |
+|---|---|---|---|---|
+| Clubhead / ball (mph) | 68.2 / 77.2 | 69.0 / 79.4 | 67.5 / 75.3 · 67.6 / 76.8 | 66.9 / 71.6 · 67.5 / 76.1 |
+| Smash | 1.20 | 1.24 | 1.17 · 1.19 | 1.14 · 1.19 |
+| Fell | 17% | 15% | 18% · 16% | 26% · 18% |
+| Finish torso / tall finishes | **0.95 m / 74%** | 0.95 m / 70% | 0.94 m / 71% · 0.95 m / 73% | 0.84 m / 57% · 0.91 m / 67% |
+| Lead foot moved | 0.58 m | 0.62 m | 0.60 m | 0.53–0.55 m |
+| Top / downswing | 0.22 / 0.11 s | 0.22 / 0.11 s | 0.21–0.22 / 0.10–0.11 s | 0.22 / 0.11 s |
+| Face-to-path | +14.9° | +16.3° | +14.3° to +14.5° | +15.1° to +15.7° |
+
+- Run 65 continued (67) keeps improving: 17% falls, 74% tall finishes, finish torso 0.95 m, all bests.
+- The lead-foot term at 50 changed nothing, although it was the second-biggest term in training
+  (−16 per second against a ball pay of +70, more than double the fall penalty's −7).
+- Motor noise didn't touch the tempo: with the noise switched off for scoring, both runs swing exactly
+  like the control. With it on they're simply worse. In 500 iterations of fine-tuning the policy
+  absorbed the noise instead of slowing down.
+
+### Rounds 3–4
+
+| From run 65, +500 iters | 71: 1.5 s finish window | 72: lead foot 150 | 73: γ 0.999 | 74: γ 0.999 + noise 0.1 |
+|---|---|---|---|---|
+| Training falls, first → last 100 iters | 78% → 71% (within 1.5 s) | 25% → 24% | 29% → 31% | 29% → 29% |
+| Lead foot moved (training) | 0.71–0.81 m | 0.58–0.66 m | 0.53–0.68 m | 0.53–0.63 m |
+| Top / downswing | 0.22 / 0.11 s | 0.22 / 0.11 s | 0.22 / 0.11 s | 0.22 / 0.11 s |
+| Clubhead / ball (mph), 256 swings | | | 69.3 / 75.5 | 67.8 / 76.2 (noise on) |
+
+- **γ 0.999** (`agent.algorithm.gamma`): PPO's discount of 0.99 per step makes a strike 0.87 s later
+  (a human tempo) worth 0.59 of the same strike now, a standing pressure to rush. At 0.999 the same delay
+  costs 5%. In 500 iterations the timing didn't move at all, with or without motor noise: the swing's
+  timing is deeply ingrained, and removing the pressure gives no reason to change it.
+- **Lead foot 150:** still no effect on the lead leg's kick.
+
+### The 1 s finish window hid every fall
+
+Run 71's training falls (71–78% within 1.5 s, against ~25% within 1 s for everything else) prompted a
+direct measurement: mean-action rollouts of 256 swings with a 3 s finish window, recording when each
+swing first drops below 0.6 m (scratch `fall_timing.py`).
+
+| | fallen by 1.0 s | 1.5 s | 2.0 s | 3.0 s | median fall time after impact |
+|---|---|---|---|---|---|
+| 67 control | 18% | 67% | 96% | 100% | 1.32 s |
+| 68 / 72 lead foot 50 / 150 | 16–17% | 68–73% | 96–97% | 100% | 1.28–1.33 s |
+| 69 / 70 motor noise 0.1 / 0.2 | 20–27% | 64–79% | 93–95% | 100% | 1.21–1.33 s |
+| 71 1.5 s window | 21% | 66% | 96% | 100% | 1.35 s |
+| 73 / 74 γ 0.999 (± noise) | 23–25% | 65–74% | 95–96% | 100% | 1.27–1.34 s |
+
+Every swing of every run falls within 2.5 s of impact. The "17% falls, 74% tall finishes" was the 1 s
+window ending first: the golfer is slowly toppling, as the videos showed (it looked wobbly). The window
+is now **3 s by default** (`post_impact_steps=180`), so training, `record_swings.py` and the archives all
+see a held finish. Every balance number before this section used the 1 s window.
+
+### Takeaways
+
+- Measure over a window long enough to see the failure. A fall penalty and finish credit checked at
+  +1.0 s rewarded swings that were still on their way down.
+- None of this round's knobs changed the swing: the lead leg kicks through regardless (50 or 150),
+  motor noise and γ 0.999 left the timing exactly where it was. Fine-tuning a converged swing for 500
+  iterations reshapes small things; timing and the finish strategy are not small.
+- The ball would slice: face-to-path +15° on almost every swing (out-to-in path, face open to it).
+
+## Holding the finish over 3 s (2026-11-16, runs 75–78)
+
+From run 67 at the new 3 s window (fall 40, std 0.25), 500 iterations each, 256 swings per eval
+(evaluated without termination, so the true fall timing shows).
+
+New knobs (off by default):
+- `env.hold_weight`: pays per second after impact, × the finish credit's upright share (torso 0.6 → 1.0 m).
+  A swing that falls at 1.8 s earns more than one that falls at 0.9 s, so every swing has a gradient even
+  when all of them fall (a fall penalty has no contrast at 100% falls). It starts at impact, so standing
+  still at address can't earn it.
+- `env.fall_terminate`: ends the episode at the fall (torso below `fall_height`), the spec's "add fall
+  termination once standing is rewarded". Without it, ~1.7 s of each 3 s episode was spent lying on the
+  ground; training steps now go to swings that are still standing.
+
+| From run 67, +500 iters | 75: 3 s window | 76: + hold 20 | 77: + hold 20, terminate | 78: + hold 50, terminate |
+|---|---|---|---|---|
+| Fell within 3 s | 100% | 100% | 100% | 100% |
+| Median fall after impact | 1.27 s | 1.25 s | 1.32 s | 1.33 s |
+| Clubhead / ball (mph) | 69.7 / 75.6 | 69.1 / 71.6 | 67.9 / 72.9 | 68.3 / 73.1 |
+| Smash | 1.17 | 1.11 | 1.12 | 1.12 |
+
+- Nothing moved. The hold pay sat flat (~7 per second at 20) and the training episode length with
+  termination stayed at 97–98 steps for all 500 iterations: the fall ~1.3 s after impact never shifted.
+- Even at 50 per second (as much as the ball pay, over 3 s) the policy didn't trade any speed for
+  balance. This lineage's fall seems built into its swing; a 500-iteration fine-tune finds no way out.
+- Next: learn the swing and the finish together, from scratch (the tempo chains below).
+
+## Tempo from scratch (2026-11-16, chains `tempo` and `ref`)
+
+Two wrist + braced-legs chains from iteration 0 (strike 300, then the full-finish stage 300; 1 s window,
+since there are no balance terms yet): `tempo` with γ 0.999 and motor noise 0.1, `ref` on the defaults.
+256 swings at iteration 598:
+
+| | tempo: γ 0.999 + noise 0.1 | ref: defaults |
+|---|---|---|
+| Top of backswing / impact | 0.20 / 0.30 s | 0.21 / 0.31 s |
+| Tempo (backswing : downswing) | 2.0 : 1 | 2.0 : 1 |
+| Backswing length | 1.29 m | 1.55 m |
+| Clubhead / ball (mph) | 53.4 / 46.3 | 64.7 / 63.7 |
+| Offline (bias) | −24° | −18° |
+
+- Same timing. The first random swings were slow (top ~0.57 s, downswing 0.4–0.55 s, in the first 100
+  iterations) and both chains sped up identically: by iteration 200–300, top at 0.16–0.18 s.
+- So the quick swing isn't the discount's doing, nor something motor noise talks it out of: with this
+  body and this reward, a fast backswing is what makes the most clubhead speed. The noise only slowed
+  learning (53 vs 65 mph). A tempo would have to be asked for directly.

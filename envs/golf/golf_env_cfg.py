@@ -113,7 +113,6 @@ class GolfEnvCfg(DirectRLEnvCfg):
     observation_space = 81
     state_space = 0
 
-    # down-the-line camera for env 0 (--num_envs 1); base cfg so --video still injects its visualizer
     sim: SimulationCfg = SimulationCfg(
         dt=1 / 120, render_interval=decimation, physics=GolfPhysicsCfg(),
         default_visualizer_cfg=VisualizerCfg(eye=(0.45, -3.2, 1.4), lookat=(0.6, 1.5, 0.5)),
@@ -127,6 +126,8 @@ class GolfEnvCfg(DirectRLEnvCfg):
     muscle: bool = False
     muscle_vmax: dict[str, float] = MUSCLE_VMAX
     muscle_k: float = 0.25              # Hill curvature (~0.25 for human muscle)
+    motor_noise: float = 0.0            # torque error SD as a fraction of the torque
+    motor_noise_tau: float = 0.05       # [s] how long a motor error persists
     damping_scale: float = 1.0          # joint damping
     leg_damping_scale: float | None = None  # hips, knees, ankles; None = damping_scale
     wrist: bool = False                 # lead wrist hinge between hand and club (22 actions)
@@ -154,8 +155,11 @@ class GolfEnvCfg(DirectRLEnvCfg):
     stand_height: float = 0.95          # [m] address torso is ~1.18
     feet_slip_weight: float = 0.0       # foot slide beyond feet_slip_free [per m]
     feet_slip_free: float = 0.03        # [m]
+    lead_foot_weight: float = 0.0       # lead foot slide beyond feet_slip_free + lift beyond lead_foot_lift_free [per m]
+    lead_foot_lift_free: float = 0.03   # [m] covers the reset reading the foot ~1.4 cm low
     fall_penalty: float = 0.0           # one-off: torso first drops below fall_height
     fall_height: float = 0.6            # [m] same as record_swings' "fell"
+    fall_terminate: bool = False        # end the episode at that fall (no time spent lying on the ground)
     actions_cost_scale: float = 0.005
     energy_cost_scale: float = 0.002
     joint_pos_limits_cost_scale: float = 0.25
@@ -165,7 +169,7 @@ class GolfEnvCfg(DirectRLEnvCfg):
     impact_radius: float = 0.07         # [m] ball r + half head length
     impact_min_speed: float = 1.0       # [m/s] head speed into the ball
     impact_arm_dist: float = 0.25       # [m] how close to count as hit
-    post_impact_steps: int = 60         # end episode this long after first contact (1 s finish)
+    post_impact_steps: int = 180        # end episode this long after first contact: a 3 s held finish (1 s hid every fall)
 
     # launch = smash x head speed into the face
     smash_max: float = 1.47             # driver, dead centre
@@ -177,6 +181,7 @@ class GolfEnvCfg(DirectRLEnvCfg):
     finish_frac: float = 0.0            # share of ball pay held until the finish, scaled by posture
     finish_low: float = 0.6             # [m] torso height at the finish that earns nothing
     finish_high: float = 1.0            # [m] torso height that earns full finish credit
+    hold_weight: float = 0.0            # per second after impact, x the same upright share: pays for holding the finish
     aim_sigma: float = 0.0              # [deg] ball pay falls off with angle off the target line
     strike_pow: float = 0.0             # ball pay x sweet-spot factor^p (1 = dead centre, as in smash)
     strike_bonus: float = 0.0           # ball pay x (1 + bonus x sweet-spot factor): only adds, so no stand-still trap
