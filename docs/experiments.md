@@ -919,3 +919,79 @@ Final checkpoints (model_2694), 256 swings each, mean actions:
   jitter feeding a chaotic swing, not from exploration noise.
 - The control at the new cap keeps improving on balance: 21% falls, 62% tall finishes (run 55: 25–33%,
   61–66% at 64 swings).
+
+## Raising the fall penalty (2026-11-16, runs 59–66)
+
+Goal: a balanced finish before the next idea. Everything is the braced-from-scratch wrist golfer at the
+1 m/s depenetration cap, run 55's recipe (finish credit from 0.6 m, aim 15, stand/feet 10), 500 iterations
+per run, scored on 256 swings with mean actions. Start: run 58's model_2694 (21% falls, 62% tall finishes,
+offline 1.5°).
+
+### A dose sweep from one parent
+
+Round 1 chained (run 59: fall 40 from run 58; run 60: the same plus `strike_bonus=1`), then the design
+switched to a sweep, so each penalty gets the same parent and the same training:
+
+| From run 58, +500 iters | 61: fall 30 (control) | 59: fall 40 | 62: fall 60 | 63: fall 100 | 60: fall 40 + bonus 1 | 64: fall 40, +1,000 |
+|---|---|---|---|---|---|---|
+| Clubhead / ball (mph) | 69.1 / 73.2 | 69.3 / 73.7 | 69.3 / 69.9 | 68.6 / 69.5 | 69.1 / 74.0 | 67.9 / 74.3 |
+| Smash | 1.12 | 1.13 | 1.07 | 1.07 | 1.14 | 1.15 |
+| Offline (90th percentile) | 3.2° (5.0°) | 3.2° (5.0°) | 3.0° (4.7°) | 2.4° (4.1°) | 3.4° (5.1°) | 5.7° (7.6°) |
+| Fell | 32% | **25%** | **25%** | 27% | 32% | 29% |
+| Finish torso / tall finishes | 0.75 m / 54% | 0.82 m / 58% | 0.82 m / 60% | 0.83 m / 62% | 0.75 m / 51% | 0.78 m / 52% |
+
+- More training alone makes this lineage worse: falls 21% → 32%, offline 1.5° → 3.2° (a push).
+- Raising the penalty to 40 holds falls at 25%. Beyond that nothing: 60 and 100 fall just as often and pay
+  for it in strike quality (smash 1.07, the heel miss 1.4 → 2.1–2.4 cm). Another 500 iterations at 40
+  didn't help either, and the push grew to 5.7°.
+- The strike bonus no longer buys strikes once the penalty is up (smash 1.14 vs 1.13).
+- In training, with exploration noise, every arm fell ~40% of the time whatever the penalty.
+- No stand-still trap even at 100: contact stayed 100%. The ball pay at 73 mph is ~98, half of it paid at
+  impact, and three-quarters of swings stand.
+
+### How it falls
+
+From the swing viewers (12 kept swings per eval, runs 58 and 59): the torso crosses 0.75 m 0.6–0.9 s
+after impact and the 0.6 m fall line at +0.7 to +1.0 s, just before the episode ends at +1.0 s. Most go
+backward, away from the ball (torso 0.8–1.2 m back): it sits back off its heels. The swings that count as
+standing drift back the same way, only less. So the penalty lands at the very end of the episode, where it
+is discounted most (0.99^60 ≈ 0.55 from impact), and a sit-back that crosses the line after +1.0 s is
+never seen.
+
+### Exploration noise
+
+The policy's action std (`distribution.std_param`, the Gaussian noise rsl_rl adds to each action in
+training) has hardly moved: 0.49 → 0.47 over 1,500 iterations, on actions clipped to ±1, with
+`entropy_coef=0`. That much noise on every joint is a likely reason training falls sit at ~40% while the
+mean action falls ~25%: the policy learns to survive its own jitter, not to finish cleanly. Round 4 tests
+it: run 59's checkpoint with the std scaled to 0.25 (run 65) and to 0.12 (run 66), each resumed at fall 40
+for 500 iterations, against run 64 (same parent, penalty and length, std left at 0.47).
+
+| From run 59, fall 40, +500 iters | 64: std 0.47 (unchanged) | 65: std 0.25 | 66: std 0.12 |
+|---|---|---|---|
+| Clubhead / ball (mph) | 67.9 / 74.3 | **69.0 / 80.4** | 68.8 / 81.5 |
+| Smash (10th percentile) | 1.15 (1.01) | **1.24** (1.04) | 1.25 (1.04) |
+| Strike scatter: heel / high (abs) | 1.7 / 1.1 cm | 1.0 / 0.7 cm | 1.0 / 0.7 cm |
+| Offline (90th percentile) | 5.7° (7.6°) | 4.1° (5.6°) | 4.3° (5.9°) |
+| Fell | 29% | **18%** | 25% |
+| Finish torso / tall finishes | 0.78 m / 52% | **0.93 m / 69%** | 0.87 m / 64% |
+| Training falls, last 100 iters | 36% | 24% | 28% |
+
+- Halving the noise did what no penalty did: falls 29% → 18%, tall finishes 52% → 69%, finish torso
+  0.93 m, the lineage's best on every balance number. It also cleaned up the strike (scatter down by
+  a third, smash 1.15 → 1.24, ball +6 mph).
+- 0.12 is too little: strikes as clean, but balance stalls (training falls rose again after iteration
+  3400). Exploration still has to find the balance fixes.
+- The std stays wherever it is set (exactly 0.25 and 0.12 after 500 iterations), so it is effectively a
+  hyperparameter. `scripts/set_action_std.py` writes a checkpoint copy with a new std to resume from.
+- The push inherited from run 59 (offline +4°) is still there; `aim_sigma` 15 barely holds direction.
+
+### Takeaways
+
+- A penalty only teaches what the policy can reach. Above 40 the fall penalty bought nothing: ~25% of
+  swings still fell, at any price. The noise was the ceiling: with std 0.47 on every joint the policy
+  learns to survive its own jitter.
+- Exploration noise is a knob, and here a big one. rsl_rl's learned std barely moves with
+  `entropy_coef=0`, so a policy keeps the noise it started with (`init_std=1.0`) unless it is set by hand.
+- Falls are late, slow sit-backs at the edge of the 1 s finish window; a longer window would see the ones
+  that cross after it.
