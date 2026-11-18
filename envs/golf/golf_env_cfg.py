@@ -149,6 +149,8 @@ class GolfEnvCfg(DirectRLEnvCfg):
     speed_radius: float = 0.35          # "near the ball" band [m]
     backswing_weight: float = 0.6       # pay for winding up, capped so cannot farm it
     backswing_cap: float = 0.60         # [m] clubhead-ball distance worth paying
+    takeaway_weight: float = 0.0        # per (m/s) per second: head speed above takeaway_speed while going back
+    takeaway_speed: float = 4.5         # [m/s] ~10 mph, a real backswing's pace
     trail_hand_weight: float = 0.2      # encourage right hand on the grip
     # balance: 0 from scratch, 10 when resuming from a striking checkpoint
     stand_weight: float = 0.0           # torso below stand_height [per m]
@@ -159,6 +161,11 @@ class GolfEnvCfg(DirectRLEnvCfg):
     lead_foot_lift_free: float = 0.03   # [m] covers the reset reading the foot ~1.4 cm low
     fall_penalty: float = 0.0           # one-off: torso first drops below fall_height
     fall_height: float = 0.6            # [m] same as record_swings' "fell"
+    balance_weight: float = 0.0         # per m per second: extrapolated CoM (CoM + v/omega0) outside the grounded soles
+    shift_weight: float = 0.0           # per second after impact, x upright: the CoM's progress toward shift_target
+    shift_target: float = 0.85          # CoM share of the way from trail to lead foot (0 trail, 1 lead) at the finish
+    balance_airborne: float = 0.10      # [m] counted off the soles while no sole touches the ground
+    foot_sole: tuple = (-0.07, 0.14, -0.027)  # [m] heel and toe capsule ends, sole depth, in the foot frame (humanoid.usda)
     fall_terminate: bool = False        # end the episode at that fall (no time spent lying on the ground)
     actions_cost_scale: float = 0.005
     energy_cost_scale: float = 0.002

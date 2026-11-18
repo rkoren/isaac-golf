@@ -68,7 +68,12 @@ class GolfEnv(DirectRLEnv):
         self.top_time = torch.zeros(self.num_envs, device=self.device)
         self.new_hit = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self.fallen = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
-        # motor noise state per joint, correlated over motor_noise_tau
+        self.mass_frac = None
+        self.xcom_out = torch.zeros(self.num_envs, device=self.device)
+        self.shift = torch.zeros(self.num_envs, device=self.device)
+        heel, toe, sole = self.cfg.foot_sole
+        self.sole_pts = torch.tensor([[heel, 0.0, sole], [toe, 0.0, sole]], device=self.device)
+        self.grounded = torch.ones(self.num_envs, 4, dtype=torch.bool, device=self.device)
         self.motor_n = torch.zeros(self.num_envs, self.robot.num_joints, device=self.device)
         self.motor_rho = math.exp(-self.cfg.sim.dt / self.cfg.motor_noise_tau)
 
@@ -147,6 +152,44 @@ class GolfEnv(DirectRLEnv):
 
         self.club_ball_dist = torch.linalg.norm(self.ball_pos - self.club_pos, dim=-1)
         self.club_speed = torch.linalg.norm(self.club_vel, dim=-1)
+
+    def _update_balance(self):
+        # extrapolated CoM against the grounded feet, and how far the weight has moved toward the lead foot
+        d = self.robot.data
+        if self.mass_frac is None:
+            m = d.body_mass.torch.to(self.device)
+            self.mass_frac = m / m.sum(-1, keepdim=True)
+        com = (self.mass_frac[..., None] * d.body_com_pos_w.torch).sum(1)
+        com_vel = (self.mass_frac[..., None] * d.body_com_lin_vel_w.torch).sum(1)
+        # Hof's extrapolated CoM: inside the feet means the body can stop without stepping
+        xcom = com[:, :2] + com_vel[:, :2] / torch.sqrt(9.81 / com[:, 2:3].clamp_min(0.2))
+        # heel and toe of each sole: a foot rolled onto its toe still holds the body up
+        n = self.num_envs
+        quat = d.body_link_quat_w.torch[:, self._feet_idx, None].expand(n, 2, 2, 4)
+        pts = d.body_link_pos_w.torch[:, self._feet_idx, None] + quat_apply(
+            quat.reshape(-1, 4), self.sole_pts.expand(n, 2, 2, 3).reshape(-1, 3)
+        ).reshape(n, 2, 2, 3)
+        pts = pts.reshape(n, 4, 3)
+        self.grounded = pts[..., 2] < 0.02
+        g = self.grounded | ~self.grounded.any(-1, keepdim=True)
+        px, py = pts[..., 0], pts[..., 1]
+        far = torch.full_like(px, 1e3)
+        r, half = -self.cfg.foot_sole[2], 0.05  # sole radius, foot half width
+        # support: the box around the grounded heels and toes
+        dx = torch.relu(torch.where(g, px, far).amin(-1) - r - xcom[:, 0]) + torch.relu(
+            xcom[:, 0] - torch.where(g, px, -far).amax(-1) - r
+        )
+        dy = torch.relu(torch.where(g, py, far).amin(-1) - half - xcom[:, 1]) + torch.relu(
+            xcom[:, 1] - torch.where(g, py, -far).amax(-1) - half
+        )
+        self.xcom_out = torch.sqrt(dx * dx + dy * dy)
+        # a hop has no support at all
+        airborne = ~self.grounded.any(-1)
+        self.xcom_out = torch.where(airborne, self.xcom_out.clamp_min(self.cfg.balance_airborne), self.xcom_out)
+        # between where the feet are now: walking toward the target is not a weight shift
+        lead, trail = self.feet_xy[:, 0], self.feet_xy[:, 1]
+        axis = lead - trail
+        self.shift = ((com[:, :2] - trail) * axis).sum(-1) / (axis * axis).sum(-1).clamp_min(1e-6)
 
     def _update_contact(self):
         """Arming, strike detection and smash-factor launch. Once per step, after physics."""
@@ -285,15 +328,18 @@ class GolfEnv(DirectRLEnv):
         gained = torch.relu(ball_speed - self.max_ball_speed)
         self.max_ball_speed = torch.maximum(self.max_ball_speed, ball_speed)
         ball_reward = self.cfg.ball_speed_weight * gained / self.step_dt
-        # hold the finish: part of the payout waits for the end of the finish, scaled by posture
         frac = self.cfg.finish_frac
         finishing = (self.post_impact == self.cfg.post_impact_steps + 1).float()
         lo, hi = self.cfg.finish_low, self.cfg.finish_high
         upright = torch.clamp((self.torso_pos[:, 2] - lo) / (hi - lo), 0.0, 1.0)
         finish = self.cfg.ball_speed_weight * frac * ball_speed * upright * finishing / self.step_dt
         ball_reward = (1.0 - frac) * ball_reward + finish
-        # hold the finish: pays every moment upright after impact, so a later fall already earns more
+        # rewarding for staying upright after contact
         hold = self.cfg.hold_weight * upright * self.impacted.float()
+        # balance metrics
+        balance = self.cfg.balance_weight * self.xcom_out
+        on_lead = torch.clamp(self.shift / self.cfg.shift_target, 0.0, 1.0)
+        shift = self.cfg.shift_weight * on_lead * upright * self.impacted.float()
 
         # 2. wind up, capped
         capped = torch.clamp(self.club_ball_dist, max=self.cfg.backswing_cap)
@@ -303,6 +349,10 @@ class GolfEnv(DirectRLEnv):
         # 3. head speed near the ball
         near = (self.club_ball_dist < self.cfg.speed_radius).float()
         speed = self.cfg.clubhead_speed_weight * self.club_speed * near
+
+        # slow takeaway: head speed above takeaway_speed costs while it moves away from the ball before impact
+        going_back = (((self.club_pos - self.ball_pos) * self.club_vel).sum(-1) > 0) & ~self.impacted
+        takeaway = self.cfg.takeaway_weight * torch.relu(self.club_speed - self.cfg.takeaway_speed) * going_back.float()
 
         # trail hand on the grip (penalty, not a weld)
         trail = self.cfg.trail_hand_weight * torch.linalg.norm(self.trail_pos - self.lead_pos, dim=-1)
@@ -335,8 +385,12 @@ class GolfEnv(DirectRLEnv):
         log["Reward/ball_speed"] = ball_reward.mean()
         log["Reward/finish"] = finish.mean()
         log["Reward/hold"] = hold.mean()
+        log["Reward/balance"] = -balance.mean()
+        log["Reward/weight_shift"] = shift.mean()
+        log["Metrics/xcom_out_cm"] = 100.0 * self.xcom_out.mean()
         log["Reward/backswing"] = wind.mean()
         log["Reward/clubhead_speed"] = speed.mean()
+        log["Reward/takeaway"] = -takeaway.mean()
         log["Reward/trail_hand"] = -trail.mean()
         log["Reward/stand"] = -stand.mean()
         log["Reward/feet"] = -feet.mean()
@@ -359,8 +413,11 @@ class GolfEnv(DirectRLEnv):
         return self.step_dt * (
             ball_reward
             + hold
+            - balance
+            + shift
             + wind
             + speed
+            - takeaway
             - trail
             - stand
             - feet
@@ -375,9 +432,10 @@ class GolfEnv(DirectRLEnv):
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         self._compute_intermediate_values()
         self._update_contact()
+        self._update_balance()
         if self.tracer is not None:
             self._draw_tracer()
-        # falling is penalised; ended too only with fall_terminate (once standing is rewarded)
+        # falling is penalized
         died = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         if self.cfg.fall_terminate:
             died = self.torso_pos[:, 2] < self.cfg.fall_height
@@ -419,6 +477,9 @@ class GolfEnv(DirectRLEnv):
             log["Metrics/path_deg"] = path.mean()
             log["Metrics/face_to_path_deg"] = (face - path).mean()
             log["Metrics/face_to_path_abs_deg"] = (face - path).abs().mean()
+            held = struck & ~self.fallen[env_ids]
+            if held.any():
+                log["Metrics/finish_shift"] = self.shift[env_ids][held].mean()
 
         super()._reset_idx(env_ids)
         index_fill_(self.actions, env_ids, 0.0)

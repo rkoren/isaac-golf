@@ -157,6 +157,8 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
         strike_off = torch.zeros(N, 2, device=u.device)  # ball on the face: heel +, high + [m]
         face_path = torch.zeros(N, 2, device=u.device)  # face and path angles off the target line [deg], + = right
         lead_moved = torch.zeros(N, device=u.device)  # lead foot's distance from its address spot [m]
+        shift = torch.zeros(N, 2, device=u.device)  # CoM share from trail to lead foot
+        outside = torch.zeros(N, 2, device=u.device)  # upright frames after impact
 
         # reset inside inference mode too, or the next checkpoint's reset fails
         with torch.inference_mode():
@@ -197,6 +199,12 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
                     face_path = torch.where(alive[:, None], torch.stack([u.face_deg, u.path_deg], -1), face_path)
                     moved_now = torch.linalg.norm(u.feet_xy[:, 0] - u.feet_home[:, 0], dim=-1)
                     lead_moved = torch.where(alive, moved_now, lead_moved)
+                if hasattr(u, "xcom_out") and t > 0:
+                    first = alive & u.impacted & (shift[:, 0] == 0)
+                    shift[:, 0] = torch.where(first, u.shift, shift[:, 0])
+                    shift[:, 1] = torch.where(alive, u.shift, shift[:, 1])
+                    up = alive & u.impacted & (d.root_pos_w.torch[:, 2] >= 0.6)
+                    outside += torch.stack([up & (u.xcom_out > 0), up], -1).float()
                 sc[alive, t, :6] = row[alive]
                 length += alive.long()
                 if t == T - 1:
@@ -290,6 +298,9 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
             "mean_downswing_time": downswing.mean().item() if hit.any() else 0.0,
             "tempo_ratio": (top_time[hit].mean() / downswing.mean().clamp_min(1e-6)).item() if hit.any() else 0.0,
             "mean_lead_foot_moved": lead_moved.mean().item(),
+            "mean_shift_impact": shift[hit, 0].mean().item() if hit.any() else 0.0,
+            "mean_shift_finish": shift[hit & ~fell, 1].mean().item() if (hit & ~fell).any() else 0.0,
+            "xcom_outside_share": (outside[:, 0].sum() / outside[:, 1].sum().clamp_min(1)).item(),
             "fell_rate": fell.float().mean().item(),
             "median_fall_after_impact": fall_after.nanmedian().item() if down.any() else 0.0,
             "mean_finish_torso": finish_torso.mean().item(),
@@ -338,6 +349,11 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
         print(
             f"    tempo: top {summary['mean_top_time']:.2f} s, downswing {summary['mean_downswing_time']:.2f} s "
             f"({summary['tempo_ratio']:.1f}:1)  lead foot moved {summary['mean_lead_foot_moved']:.2f} m"
+        )
+        print(
+            f"    balance: weight on lead side {summary['mean_shift_impact']:.2f} at impact, "
+            f"{summary['mean_shift_finish']:.2f} at a held finish (0 trail foot, 1 lead foot)  "
+            f"extrapolated CoM off the feet {summary['xcom_outside_share']:.0%} of upright time after impact"
         )
 
         episodes = []

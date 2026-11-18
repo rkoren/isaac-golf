@@ -1138,3 +1138,296 @@ since there are no balance terms yet): `tempo` with γ 0.999 and motor noise 0.1
 - So the quick swing isn't the discount's doing, nor something motor noise talks it out of: with this
   body and this reward, a fast backswing is what makes the most clubhead speed. The noise only slowed
   learning (53 vs 65 mph). A tempo would have to be asked for directly.
+
+## Swing and finish learned together: a held 3 s finish (2026-11-16, chains `bal_ref`, `takeaway`)
+
+New knob (off by default): `env.takeaway_weight` charges per (m/s) per second for clubhead speed above
+`env.takeaway_speed` (4.5 m/s, ~10 mph, a real backswing's pace) while the club moves away from the ball
+before impact. The downswing and follow-through are never charged, so it asks for a slow takeaway without
+touching the strike.
+
+Two chains, run together, wrist + braced legs:
+- **A `bal_ref`:** the `ref` golfer (defaults from iteration 0, iteration 598) into two balance stages:
+  600 iterations of the balance recipe (finish credit from 0.6 m, aim 15, stand/feet 10) with the 3 s
+  window, `hold_weight=20` and `fall_terminate`, action std reset to 0.25 (`set_action_std.py`; it was
+  0.67); then 500 more with `fall_penalty=40`.
+- **B `takeaway`:** a new golfer with `takeaway_weight=10` from iteration 0: strike 300, full finish 300,
+  then the same two balance stages (std 0.69 → 0.25).
+
+Training log (stochastic actions; falls within 3 s, episode length rising = holding longer):
+
+| | balance stage 1 start → end of stage 2 | episode length (steps) | clubhead | smash |
+|---|---|---|---|---|
+| A | 99% → 92% | 91 → 151 | 64.7 → 68.5 mph | 1.13 → 1.31 |
+| B | 99% → 38% | 86 → 180 | 51.5 → 52.8 mph (peak 57) | 1.14 → 1.24 |
+
+Final checkpoints (iteration 1696), 256 swings, mean actions, 3 s window:
+
+| | A: reference | B: takeaway rule |
+|---|---|---|
+| Fell within 3 s | 87% | **25%** |
+| Standing tall at 3 s (torso ≥ 0.9 m) | 7% | **74%** |
+| Median fall after impact (fallers) | 2.23 s | 1.97 s |
+| Clubhead / ball (mph) | **69.0 / 89.6** | 53.5 / 63.4 |
+| Smash (10th percentile) | **1.37** (1.23) | 1.23 (1.05) |
+| Offline (90th percentile) | **1.1° (2.3°)** | 2.1° (4.3°) |
+| Backswing: length, top | 1.82 m, 0.21 s | 1.35 m, 0.25 s |
+| Tempo (backswing : downswing) | 1.7 : 1 | 2.2 : 1 |
+| Lead foot moved | 0.61 m | **0.29 m** |
+| Face-to-path / shape | +8.8° / 94% slice | +5.3° / 18% straight, 42% fade, 40% slice |
+
+- **B is the first golfer to hold a finish:** three quarters of its swings are standing tall 3 s after
+  impact, its lead foot stays nearly planted, and it was still improving (training falls 52% → 38% over
+  the last 300 iterations). The cost is speed: 15 mph of clubhead against A. The takeaway rule made a
+  shorter (1.35 m), gentler swing, and that swing can be balanced.
+- **A has the best strike so far** (smash 1.37, 90 mph ball, 1.1° offline) and learned to stay up much
+  longer than the old lineage (median fall 2.2 s against 1.3 s), but 87% still fall within 3 s. It was
+  also still improving.
+- Learning the swing and the finish together worked where 500-iteration fine-tunes of a converged swing
+  did not (runs 75–78).
+- The takeaway rule moved the top only 0.21 → 0.25 s: the backswing got shorter rather than much slower,
+  so this isn't a human tempo yet.
+
+## Continuing both chains (2026-11-17, `bal_ref3`–`4`, `takeaway_15mph`/`20mph`)
+
+Both chains resumed from iteration 1696 for two more 500-iteration stages each, same balance recipe (3 s
+window, hold 20, `fall_terminate`, `fall_penalty=40`, std 0.25 carried in the checkpoints), run together.
+- **A `bal_ref`:** unchanged.
+- **B `takeaway`:** the takeaway limit relaxed in steps to win back speed: `takeaway_speed=6.7` (15 mph),
+  then `8.9` (20 mph), weight still 10.
+
+256 swings per final checkpoint, mean actions, 3 s window:
+
+| | A 1696 | A 2195 | A 2694 | B 1696 (10 mph) | B 2195 (15 mph) | B 2694 (20 mph) |
+|---|---|---|---|---|---|---|
+| Fell within 3 s | 87% | 70% | **60%** | 25% | 25% | 24% |
+| Standing tall at 3 s | 7% | 23% | **31%** | 74% | 69% | 70% |
+| Median fall after impact (fallers) | 2.23 s | 2.45 s | 2.53 s | 1.97 s | 2.22 s | 1.87 s |
+| Clubhead / ball (mph) | 69.0 / 89.6 | 69.4 / 90.2 | 68.4 / 88.7 | 53.5 / 63.4 | 52.8 / 64.1 | 51.6 / 57.7 |
+| Smash (10th percentile) | 1.37 (1.23) | 1.38 (1.29) | 1.37 (1.27) | 1.23 (1.05) | 1.26 (1.04) | 1.16 (1.00) |
+| Offline (90th percentile) | 1.1° (2.3°) | 1.2° (2.6°) | 1.1° (2.4°) | 2.1° (4.3°) | 2.4° (4.8°) | 2.9° (5.9°) |
+| Backswing: length, top | 1.82 m, 0.21 s | 1.82 m, 0.21 s | 1.83 m, 0.21 s | 1.35 m, 0.25 s | 1.40 m, 0.25 s | 1.41 m, 0.26 s |
+| Lead foot moved | 0.61 m | 0.50 m | 0.49 m | 0.29 m | 0.31 m | 0.35 m |
+| Face-to-path | +8.8° | +8.8° | +8.2° (89% slice) | +5.3° | +6.1° | +9.0° (94% slice) |
+| Takeaway charge (training, per s) | – | – | – | −1.0 | −0.25 | ~0 |
+
+- **A keeps learning to stand at full speed:** falls 87% → 60% and tall finishes 7% → 31% over 1,000
+  iterations, with clubhead, smash and direction unchanged. Still about 10 points of falls per 500
+  iterations, and the falls keep coming later (median 2.5 s after impact).
+- **B won back no speed:** at 20 mph the rule charged almost nothing (the backswing no longer reaches the
+  limit), yet the clubhead stayed at ~52 mph and the backswing grew only 6 cm. The slow swing is now held
+  in place by the balance terms, not by the rule: speeding up risks the hold pay (~17 per second over 3 s)
+  that this golfer already collects, a local optimum. Its strike slipped in the last stage (smash 1.16,
+  heel miss 1.7 cm, face open to +3°), and its balance didn't move (24–25% falls throughout).
+- The takeaway rule bought balance by shrinking the swing, and the swing stays shrunk after the rule is
+  gone. The full-speed lineage (A) is the one still improving on both fronts.
+
+Videos: each chain is filmed from iteration 0 to 2694 as one progression (`archive_run.py` now takes several run
+dirs), in `media/2026-11-17_stage0o-hold_*_takeaway_20mph/` and `media/2026-11-17_stage0o-hold_*_bal_ref4/`.
+Each clip is a single swing: B's last clip happens to show one of its falls (24% of swings), and A's last one
+shows a held finish (40% of swings), so judge on the 256-swing table above. The viewer labels 25–37% of chain A's strikes
+"shaft" (against 3–7% for B); that is its nearest-shape vote on the recorded frame. The env only launches the ball
+from the head's box, and those strikes are centred (smash 1.37, heel offset −0.2 cm).
+
+## Chain A to 4,200 iterations: the plateau (2026-11-17, `bal_ref5`–`7`)
+
+`bal_ref4` model_2694 resumed for three more 500-iteration stages, recipe unchanged. 256 swings, mean
+actions, 3 s window (2694 repeated from above):
+
+| | 2694 | 3193 | 3692 | 4191 |
+|---|---|---|---|---|
+| Fell within 3 s | 60% | 54% | **49%** | 53% |
+| Standing tall at 3 s | 31% | **41%** | 40% | 38% |
+| Median fall after impact (fallers) | 2.53 s | 2.58 s | 2.47 s | 2.45 s |
+| Clubhead / ball (mph) | 68.4 / 88.7 | 69.0 / 87.9 | 68.3 / 87.4 | 67.6 / 85.6 |
+| Smash (10th percentile) | 1.37 (1.27) | 1.35 (1.22) | 1.34 (1.21) | 1.31 (1.12) |
+| Offline (90th percentile) | 1.1° (2.4°) | 1.5° (3.2°) | 1.2° (2.5°) | 1.7° (3.4°) |
+| Lead foot moved | 0.49 m | 0.47 m | 0.51 m | 0.53 m |
+| Face-to-path / slice share | +8.2° / 89% | +8.5° / 94% | +7.9° / 84% | +7.2° / 68% |
+
+Training falls (stochastic actions, mean per 250 iterations) went 0.97 → 0.75 over stages 2–4, then 0.69,
+0.66, 0.68, 0.64, 0.62, 0.65 over these three. Episode length stayed at 170–175 steps throughout.
+
+- **Balance plateaus near 50% falls and 40% tall** from about iteration 3200. A 256-swing rate is good to
+  about ±3 points, so 3193–4191 are one level.
+- **The strike slowly gives way:** smash 1.37 → 1.31 (10th percentile 1.27 → 1.12), ball −3 mph. With
+  balance stalled, the policy trades strike quality for nothing measurable.
+- Best checkpoint of the chain: **`bal_ref6` model_3692** (49% falls, 40% tall, 68 mph, smash 1.34).
+  More of the same recipe won't take it further; the next change has to come from the reward or the body.
+
+## A balance reward vs a harsher fall penalty (2026-11-17, `harsh_fall`, `balance`)
+
+The plateaued golfer stands with straight legs and makes no attempt to balance or shift its weight. The
+question was whether a much harsher fall penalty fixes that. The reward already makes falling expensive:
+a held finish earns the delayed half of the ball pay plus ~60 of hold pay, so a weak strike that holds
+(~127) beats a 90 mph ball and a fall 2.5 s after impact (~64). It falls half the time anyway: the penalty
+says what not to do, never how to stay up, and it arrives 2.5 s after the swing that set it up. (The old
+"saturates above 40" sweep, runs 59–66, ran on the 1 s window, before most falls happened.)
+
+New knobs (off by default):
+- `env.balance_weight` [per m per second]: the **extrapolated CoM** (Hof 2005: CoM + velocity/ω0,
+  ω0 = √(g/CoM height), where the body is headed) outside the support box of the grounded soles. Each sole
+  is a heel and a toe point (`foot_sole`, from the humanoid's foot capsules); a point counts as grounded
+  under 2 cm, so a foot rolled onto its toe still supports. This warns before the fall, while torso height
+  still looks fine.
+- `env.shift_weight` [per second after impact, × the upright share]: pays the CoM's progress from the trail
+  foot's address spot toward `shift_target` (0.85 of the way to the lead foot's).
+- `Metrics/xcom_out_cm`, `Metrics/finish_shift`; `record_swings.py` prints the weight shift at impact and at
+  a held finish, and the share of upright time after impact with the extrapolated CoM off the soles.
+
+Both from `bal_ref6` model_3692, 500 iterations, against `bal_ref7` (same parent, unchanged). 256 swings:
+
+| | `bal_ref7` (fall 40) | `harsh_fall` (fall 150) | `balance` (balance 100, shift 20, fall 40) |
+|---|---|---|---|
+| Fell within 3 s | 53% | 46% | **40%** |
+| Standing tall at 3 s | 38% | 45% | **49%** |
+| Weight toward lead foot at a held finish | 0.33 | 0.41 | **0.50** |
+| Extrapolated CoM off the soles after impact | 71% | 67% | 67% |
+| Clubhead / ball (mph) | 67.6 / 85.6 | 67.4 / 86.3 | 67.7 / 86.2 |
+| Smash (10th percentile) | 1.31 (1.12) | 1.33 (1.16) | 1.33 (1.17) |
+| Face-to-path / slice share | +7.2° / 68% | +6.9° / 65% | +6.4° / 54% |
+
+(The `balance` run trained with a first version of the support test that read a foot as lifted once its
+ankle rose 3 cm, so a heel-up foot didn't count; the sole version replaced it after this round. On this
+golfer the two hardly differ: its trail foot really leaves the ground.) Training: weight-shift pay 5.9 →
+8.1 per second and the extrapolated CoM 16.5 → 15.2 cm off on average, both still moving at the end.
+
+- **The balance reward beat the harsher penalty:** −13 points of falls against the control (two standard
+  errors is ~9), +11 tall, weight half way to the lead foot, no speed lost and a squarer face. The 150
+  penalty helped less (−7, about 1.6 standard errors).
+- **What the golfer does now** (sole contacts by phase, `balance` model_4191): both feet down at address;
+  in the downswing the trail foot leaves the ground (heel 0%, toe 10% grounded); 0.25–0.5 s after impact it
+  lands back on the trail foot and kicks the lead foot up (lead heel 28%, toe 20%); from 2 s on it balances
+  on the trail leg with the lead foot in the air (12%/8%) while the extrapolated CoM drifts 30 cm off the
+  sole: the slow late fall. A real golfer does the reverse, finishing on the lead foot with the trail toe down.
+
+### Round 2: more of the balance reward, with and without the harsh penalty (`balance2`, `balance2_fall150`)
+
+Both from `balance` model_4191, 500 iterations, with the sole-based support test; fall penalty 40 vs 150.
+
+| | `balance` 4191 | `balance2` 4690 (fall 40) | `balance2_fall150` 4690 |
+|---|---|---|---|
+| Fell within 3 s | 40% | 41% | 42% |
+| Standing tall at 3 s | 49% | 53% | 53% |
+| Weight toward lead foot at a held finish | 0.50 | 0.44 | 0.46 |
+| Clubhead / ball (mph) | 67.7 / 86.2 | 67.7 / 83.0 | 67.1 / 83.1 |
+| Smash (10th percentile) | **1.33 (1.17)** | 1.27 (1.09) | 1.28 (1.12) |
+| Face-to-path / slice share | +6.4° / 54% | +5.8° / 34% | +5.5° / 31% |
+
+(The share of upright time with the extrapolated CoM off the soles reads 74–77% here; round 1's 67% used the
+older support test, so they don't compare.) Training falls sat at 52–54% for both, episode length flat at
+177–180 steps; the weight-shift pay crept up (8.4 → 9.4 per second) without the finish moving.
+
+- **The balance reward was a one-time step:** 53% → 40% falls in its first 500 iterations, then flat, with the
+  strike slipping again (smash 1.33 → 1.27, ball −3 mph). The harsher penalty adds nothing on top.
+- Same lesson as runs 75–78: this swing jumps off the trail foot in the downswing and lands on it, and a
+  fine-tune of a converged swing doesn't rebuild that. The next test is the balance reward from the first
+  balance stage of a fresh chain, the way the takeaway rule only worked from iteration 0.
+- Best checkpoint so far at full speed: `balance` model_4191 (40% falls, 49% tall, 68 mph, smash 1.33).
+
+### A fresh chain with the balance reward (`balfresh`), and two loopholes
+
+Chain A's pre-balance golfer (`ref_full` model_598) through the same two balance stages as `bal_ref1`/`2`
+(600 iterations, then 500 with `fall_penalty=40`), with `balance_weight=100 shift_weight=20` from the
+first. Same parent, same recipe, one change. 256 swings:
+
+| | `bal_ref1` 1197 | `balfresh1` 1197 | `bal_ref2` 1696 | `balfresh2` 1696 |
+|---|---|---|---|---|
+| Fell within 3 s | 98% | 100% | 87% | **68%** |
+| Standing tall at 3 s | 1% | 0% | 7% | **12%** |
+| Median fall after impact (fallers) | – | 1.95 s | 2.23 s | **2.72 s** |
+| Extrapolated CoM off the soles after impact | 85% | 51% | 73% | **43%** |
+| Clubhead / ball (mph) | 67.8 / 85.5 | 65.2 / 79.0 | 69.0 / 89.6 | 66.3 / 84.5 |
+| Smash (10th percentile) | 1.33 (1.19) | 1.28 (1.07) | 1.37 (1.23) | 1.33 (1.13) |
+
+Training falls in stage 2 went 0.98 → 0.90 and episode length 133 → 174 steps (chain A: 0.97 → 0.92,
+121 → 151), still moving fast.
+
+Sole contacts (`balfresh2` model_1696): the first second after impact is the best balance yet, both feet
+mostly down and the extrapolated CoM off the soles only 13–18% of the time, with the weight moving to 0.79
+of the way to the lead foot. After ~1 s it walks toward the target: the held swings end with the trail foot
+0.61 m and the lead foot 0.24 m toward the target, and from 2 s both feet are often in the air at once.
+Two loopholes in the reward paid for that, both closed after this run:
+- the weight shift was measured between the feet's **address** spots, so walking the whole body toward the
+  target counted as a shift (finish readings of 1.1–1.6). It is now measured between where the feet are;
+- with no sole on the ground the support fell back to all four sole points, so a hop counted as balanced.
+  Now no grounded sole counts as at least `balance_airborne` (0.10 m) off.
+
+### The fresh chain with the loopholes closed (`balfix`, `balfix_feet`)
+
+Same start (`ref_full` model_598) and recipe as `balfresh`, with the sole-based support test, the weight
+shift measured between where the feet are, and hops counted as unsupported. `balfix_feet` also raises
+`feet_slip_weight` 10 → 50. 256 swings at iteration 1696 (`bal_ref2` and `balfresh2` from above):
+
+| | `bal_ref2` (chain A) | `balfresh2` | **`balfix2`** | `balfix_feet2` |
+|---|---|---|---|---|
+| Fell within 3 s | 87% | 68% | **43%** | 80% |
+| Standing tall at 3 s | 7% | 12% | **37%** | 5% |
+| Median fall after impact (fallers) | 2.23 s | 2.72 s | 2.75 s | 2.60 s |
+| Extrapolated CoM off the soles after impact | 73% | 43% | **30%** | 45% |
+| Clubhead / ball (mph) | **69.0 / 89.6** | 66.3 / 84.5 | 67.6 / 81.6 | 67.9 / 86.4 |
+| Smash (10th percentile) | **1.37 (1.23)** | 1.33 (1.13) | 1.29 (1.09) | 1.36 (1.22) |
+| Face-to-path / slice share | +8.8° / 94% | +9.5° / 92% | +10.1° / 92% | +9.5° / 98% |
+
+(The support test changed between columns, so the CoM row compares only roughly.) After stage 1 (iteration
+1197) every chain still falls on every swing; the difference is all in stage 2. `balfix2`'s training falls
+went 0.97 → 0.76 over stage 2, 0.95 → 0.76 in its last 100 iterations alone, so it was far from done.
+
+Sole contacts, `balfix2` model_1696: the trail foot still leaves the ground in the downswing, but from
+0.25 s to 2 s after impact both feet are down 95–100% of the time with the extrapolated CoM off the soles
+0–13% of it, weight 0.58–0.71 of the way to the lead foot: a balanced, weighted-forward finish for two
+seconds, the first. After 2 s the feet start to move and the remaining falls happen (median 2.75 s). Held
+swings end with the feet 0.24 m (lead) and 0.31 m (trail) from their address spots, stance 0.48 m wide.
+
+- **The balance reward from the first balance stage works:** at iteration 1696, `balfix2` matches what chain A
+  reached at 3692 (49% falls, 40% tall) and is still improving steeply. Cost: ~8 mph of ball speed (smash
+  1.29 against 1.37) and no change to the slice.
+- **Planted feet hurt:** 5× the foot-slide penalty took falls back to 80%. This body balances partly by
+  moving its feet; holding them still removes that.
+
+### `balfix` to 3,200 iterations (2026-11-18, `balfix3`–`5`)
+
+`balfix2` model_1696 resumed for three more 500-iteration stages, recipe unchanged (balance 100, shift 20,
+fall 40). 256 swings, mean actions, 3 s window (1696 repeated from above):
+
+| | 1696 | **2195** | 2694 | 3193 |
+|---|---|---|---|---|
+| Fell within 3 s | 43% | **10%** | 12% | 14% |
+| Standing tall at 3 s | 37% | **86%** | 84% | 83% |
+| Median fall after impact (fallers) | 2.75 s | 2.67 s | 2.37 s | 2.00 s |
+| Extrapolated CoM off the soles after impact | 30% | **14%** | 40% | 49% |
+| Weight toward lead foot at a held finish | 1.44 | **0.83** | 0.72 | 0.70 |
+| Clubhead / ball (mph) | 67.6 / 81.6 | 68.4 / 84.2 | 69.0 / 83.2 | 68.2 / 81.5 |
+| Smash (10th percentile) | 1.29 (1.09) | 1.31 (1.10) | 1.30 (1.11) | 1.28 (1.10) |
+| Offline (90th percentile) | 1.0° (2.5°) | 1.0° (2.6°) | 1.0° (2.5°) | 1.0° (2.7°) |
+| Lead foot moved | 0.42 m | 0.38 m | 0.43 m | 0.42 m |
+| Face-to-path / slice share | +10.1° / 92% | +10.0° / 95% | +9.8° / 93% | +10.0° / 93% |
+
+(1696's 1.44 is the projection blowing up when the feet end close together; only 57% of its swings held.)
+Training (stochastic actions, mean per 100 iterations): falls 0.68 → 0.19 over `balfix3`, then 0.20–0.29 for
+the next 1,000; the extrapolated CoM's mean distance off the soles (every step) 6.0 → 3.2 cm, then back to 6.7;
+the finish weight shift 1.28 → 0.84, then 0.68; action std 0.15 → 0.11.
+
+Sole contacts by phase (256 swings each):
+- **2195:** the trail foot still leaves the ground in the downswing (heel 0%, toe 14% grounded) and lands within
+  0.25 s. From 0.25 s to 2 s after impact both feet stay down (trail toe 70–98%) with the extrapolated CoM off
+  the soles 1–3% of the time. In the last 1.3 s the trail toe lifts (19%) and the CoM is off 29%. Held swings
+  end with the lead foot 0.34 m from its spot (0.30 m of it toward the ball), the trail foot 0.19 m.
+- **3193:** the same through 1 s, then the trail foot comes off the ground (heel 0.55 → 0.08, toe 0.12 → 0.02
+  grounded) and it finishes on the lead foot alone, the extrapolated CoM off that one sole 48% of 1–2 s and 90%
+  after. That one-legged finish is the loosening in the table.
+
+- **The first full-speed golfer that holds a finish:** at 2195, 90% of swings stay up for 3 s and 86% finish
+  standing tall, at 68 mph clubhead and an 84 mph ball, with the weight at 0.83 of the way to the lead foot
+  (target 0.85). Chain A's best was 49% falls at 87 mph ball; the slow `takeaway` chain held 75% at 63 mph.
+- **Then it plateaus and the finish loosens:** falls and tall finishes hold within noise (±3 points), but the
+  trail foot comes off the ground a second after impact, the extrapolated CoM spends 14% → 49% of the finish
+  off the soles, the weight drifts back to 0.70 and the fallers go down sooner. The mean-action return falls
+  too (110.8 → 107.2): the drift buys nothing the reward can see. A suspect, untested: the action std
+  shrinking below 0.12, where run 65's lineage also stalled.
+- Video (`media/2026-11-18_stage0p-balance_2026-11-18_01-47-09_balfix5/`, clips at 0, 600, 1200, 1900, 2500, 3193): 1 s after
+  impact the last three stand in a high finish, lead leg posted, trail toe down. By the end of the clip 1900
+  and 2500 are down and 3193 stands. Each clip is one swing: two falls in three is more than a 10–20% rate
+  predicts (a few percent chance), so the single-env Kit replay may differ from the headless evals; unchecked.
+- Best checkpoint: **`balfix3` model_2195** (10% falls, 86% tall, 68 mph, ball 84 mph, smash 1.31). The slice
+  is untouched (face-to-path +10°).
