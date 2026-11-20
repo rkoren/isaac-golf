@@ -18,6 +18,7 @@ REPO = Path(__file__).resolve().parents[1]
 MEDIA = REPO / "media"
 UV = ["uv", "run", "--env-file", "omni.env"]
 MPH = 2.23694  # m/s -> mph
+YD = 1.09361  # m -> yards
 
 ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
 ap.add_argument("run", nargs="+", help="run dir(s) in training order, e.g. logs/rsl_rl/golf_swing/2026-10-29_23-27-19_fixes_120hz")
@@ -40,7 +41,8 @@ ckpts = sorted({ckpts[round(i * (len(ckpts) - 1) / max(n - 1, 1))] for i in rang
 out = MEDIA / f"{time.strftime('%Y-%m-%d')}_{args.stage}_{run.name}"
 out.mkdir(parents=True, exist_ok=True)
 REPLAY = ("club", "wrist", "muscle", "muscle_k", "damping_scale", "leg_damping_scale", "impact_arm_dist",
-          "max_depenetration_velocity", "motor_noise", "motor_noise_tau")
+          "max_depenetration_velocity", "motor_noise", "motor_noise_tau", "ball_forward", "wrist_gear", "flight_obs",
+          "turf_area")
 
 
 def replay_overrides(r: Path) -> list[str]:
@@ -110,6 +112,8 @@ if viewers:
                + (f", backswing {s['mean_backswing']:.2f} m" if s.get("mean_backswing") else "")
                + (f", smash {s['mean_smash']:.2f}" if s.get("mean_smash") else "")
                + (f", offline {s['mean_offline_deg']:.0f}°" if s.get("mean_offline_deg") is not None else "")
+               + (f", carry {YD * s['mean_carry']:.0f} yd, curve {YD * s['mean_curve']:+.0f} yd"
+                  if s.get("mean_carry") is not None else "")
                + f", fell {s['fell_rate']:.0%}"
                + (f", finish torso {s['mean_finish_torso']:.2f} m" if s.get("mean_finish_torso") else ""))
 

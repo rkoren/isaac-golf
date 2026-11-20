@@ -13,6 +13,8 @@ def Xform "golfer" (
         prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI", "PhysicsFilteredPairsAPI"]
     )
     {
+        point3f physics:centerOfMass = (0, 0, 0.1311)
+        float3 physics:diagonalInertia = (0.0173679, 0.017288849, 0.00011268333)
         rel physics:filteredPairs = [
             </golfer/left_hand>,
             </golfer/right_hand>,
@@ -20,11 +22,13 @@ def Xform "golfer" (
             </golfer/right_lower_arm>,
         ]
         float physics:mass = 0.4
+        quatf physics:principalAxes = (1, 0, 0, 0)
 
         def Cube "head" (
             prepend apiSchemas = ["PhysicsCollisionAPI"]
         )
         {
+            bool physics:collisionEnabled = 0
             uniform token purpose = "guide"
             double size = 1
             float3 xformOp:scale = (0.02, 0.065, 0.04)
@@ -36,10 +40,10 @@ def Xform "golfer" (
         )
         {
             uniform token axis = "Z"
-            double height = 0.6799999999999999
+            double height = 0.6199999999999999
             uniform token purpose = "guide"
             double radius = 0.015
-            double3 xformOp:translate = (0, 0, 0.355)
+            double3 xformOp:translate = (0, 0, 0.38499999999999995)
             uniform token[] xformOpOrder = ["xformOp:translate"]
         }
 
@@ -155,7 +159,7 @@ def Xform "golfer" (
         point3f physics:localPos0 = (0, 0, 0)
         point3f physics:localPos1 = (0, 0, 0.69)
         quatf physics:localRot0 = (1, 0, 0, 0)
-        quatf physics:localRot1 = (0.27052, 0.64559, 0.7056, -0.11029)
+        quatf physics:localRot1 = (0.26959, 0.65122, 0.69542, -0.14012)
     }
 
     over "left_hand" (

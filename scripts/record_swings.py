@@ -53,7 +53,7 @@ if not ckpts:
 import gymnasium as gym
 
 import envs.golf
-from envs.golf.golf_env_cfg import MPH
+from envs.golf.golf_env_cfg import FLIGHT_KEYS, MPH, STRIKE_CLASSES, YD
 from envs.golf.golfer import CLUB_BODY
 from envs.golf.shapes import body_shapes
 from isaaclab.utils.math import quat_apply
@@ -159,6 +159,11 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
         lead_moved = torch.zeros(N, device=u.device)  # lead foot's distance from its address spot [m]
         shift = torch.zeros(N, 2, device=u.device)  # CoM share from trail to lead foot
         outside = torch.zeros(N, 2, device=u.device)  # upright frames after impact
+        trail_lift = torch.zeros(N, device=u.device)  # trail sole's highest low point before impact [m]
+        flight = torch.zeros(N, len(FLIGHT_KEYS), device=u.device)  # flight/ per strike, FLIGHT_KEYS
+        ground = getattr(u, "ground", False)  # ball on the ground: strike class, leading edge [m], turf factor
+        strike_cls = torch.zeros(N, dtype=torch.long, device=u.device)
+        turf = torch.stack([torch.zeros(N, device=u.device), torch.ones(N, device=u.device)], -1)
 
         # reset inside inference mode too, or the next checkpoint's reset fails
         with torch.inference_mode():
@@ -199,12 +204,18 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
                     face_path = torch.where(alive[:, None], torch.stack([u.face_deg, u.path_deg], -1), face_path)
                     moved_now = torch.linalg.norm(u.feet_xy[:, 0] - u.feet_home[:, 0], dim=-1)
                     lead_moved = torch.where(alive, moved_now, lead_moved)
+                if hasattr(u, "flight_out"):
+                    flight = torch.where(alive[:, None], u.flight_out, flight)
+                if ground:
+                    strike_cls = torch.where(alive, u.strike_class, strike_cls)
+                    turf = torch.where(alive[:, None], torch.stack([u.leading_edge, u.turf_factor], -1), turf)
                 if hasattr(u, "xcom_out") and t > 0:
                     first = alive & u.impacted & (shift[:, 0] == 0)
                     shift[:, 0] = torch.where(first, u.shift, shift[:, 0])
                     shift[:, 1] = torch.where(alive, u.shift, shift[:, 1])
                     up = alive & u.impacted & (d.root_pos_w.torch[:, 2] >= 0.6)
                     outside += torch.stack([up & (u.xcom_out > 0), up], -1).float()
+                    trail_lift = torch.where(alive, u.trail_lift, trail_lift)
                 sc[alive, t, :6] = row[alive]
                 length += alive.long()
                 if t == T - 1:
@@ -267,6 +278,9 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
         bands = {"hook": ftp < -6, "draw": (ftp >= -6) & (ftp < -2), "straight": ftp.abs() <= 2,
                  "fade": (ftp > 2) & (ftp <= 6), "slice": ftp > 6}
         downswing = impact[hit, 2] - top_time[hit]
+        # flown: struck forward, and the env computed a flight
+        flown = hit & ~backwards & (flight.abs().sum(-1) > 0)
+        fl = dict(zip(FLIGHT_KEYS, flight[flown].T))
         summary = {
             "contact_rate": hit.float().mean().item(),
             "moved_rate": moved.any(1).float().mean().item(),
@@ -301,6 +315,8 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
             "mean_shift_impact": shift[hit, 0].mean().item() if hit.any() else 0.0,
             "mean_shift_finish": shift[hit & ~fell, 1].mean().item() if (hit & ~fell).any() else 0.0,
             "xcom_outside_share": (outside[:, 0].sum() / outside[:, 1].sum().clamp_min(1)).item(),
+            "mean_trail_lift_m": trail_lift[hit].mean().item() if hit.any() else 0.0,
+            "trail_off_share": (trail_lift[hit] > 0.03).float().mean().item() if hit.any() else 0.0,
             "fell_rate": fell.float().mean().item(),
             "median_fall_after_impact": fall_after.nanmedian().item() if down.any() else 0.0,
             "mean_finish_torso": finish_torso.mean().item(),
@@ -312,6 +328,13 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
             "mean_return": ret.mean().item(),
             "action_std": std.mean().item(),
         }
+        if ground and hit.any():
+            summary |= {"strike_classes": {k: (strike_cls[hit] == i).float().mean().item() for i, k in enumerate(STRIKE_CLASSES)},
+                        "mean_leading_edge_m": turf[hit, 0].mean().item(), "mean_turf_factor": turf[hit, 1].mean().item()}
+        if flown.any():
+            summary |= {f"mean_{k}": v.mean().item() for k, v in fl.items()}
+            summary |= {"side_abs": fl["side"].abs().mean().item(), "curve_abs": fl["curve"].abs().mean().item(),
+                        "carry_p10": fl["carry"].quantile(0.1).item(), "side_abs_p90": fl["side"].abs().quantile(0.9).item()}
         print(
             f"[{ckpt.stem}] contact {summary['contact_rate']:.0%}  fell {summary['fell_rate']:.0%}  "
             f"torso at finish {summary['mean_finish_torso']:.2f} m  "
@@ -353,8 +376,26 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
         print(
             f"    balance: weight on lead side {summary['mean_shift_impact']:.2f} at impact, "
             f"{summary['mean_shift_finish']:.2f} at a held finish (0 trail foot, 1 lead foot)  "
-            f"extrapolated CoM off the feet {summary['xcom_outside_share']:.0%} of upright time after impact"
+            f"extrapolated CoM off the feet {summary['xcom_outside_share']:.0%} of upright time after impact  "
+            f"trail foot off the ground before impact {summary['trail_off_share']:.0%} (highest {summary['mean_trail_lift_m']:.2f} m)"
         )
+        if "strike_classes" in summary:
+            classes = "  ".join(f"{k} {v:.0%}" for k, v in summary["strike_classes"].items())
+            print(
+                f"    off the ground: {classes}  leading edge {1000 * summary['mean_leading_edge_m']:+.0f} mm at impact  "
+                f"ball speed kept through the turf {summary['mean_turf_factor']:.2f}"
+            )
+        if flown.any():
+            print(
+                f"    flight: carry {YD * summary['mean_carry']:.0f} yd (p10 {YD * summary['carry_p10']:.0f})  "
+                f"side {YD * summary['mean_side']:+.1f} yd (|{YD * summary['side_abs']:.1f}|, p90 {YD * summary['side_abs_p90']:.1f})  "
+                f"curve {YD * summary['mean_curve']:+.1f} yd  apex {YD * summary['mean_apex']:.1f} yd  (+ = right)"
+            )
+            print(
+                f"    launch {summary['mean_launch_deg']:.1f} deg  spin {summary['mean_spin_rpm']:.0f} rpm, axis "
+                f"{summary['mean_axis_deg']:+.1f} deg  attack {summary['mean_attack_deg']:+.1f} deg  "
+                f"dynamic loft {summary['mean_dynamic_loft_deg']:.1f} deg  spin loft {summary['mean_spin_loft_deg']:.1f} deg"
+            )
 
         episodes = []
         for i in picks:
@@ -369,6 +410,9 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
                     "smash": smash[i].item(), "backwards": bool(backwards[i]),
                     "impactClub": impact[i, 0].item(), "impactHand": impact[i, 1].item(), "impactTime": impact[i, 2].item(),
                     "offline": offline[i].item(), "backswing": backswing[i].item(), "topTime": top_time[i].item(),
+                    **({"carry": flight[i, 0].item(), "curve": flight[i, 2].item(), "side": flight[i, 1].item(),
+                        "spin": flight[i, 4].item(), "axis": flight[i, 5].item(), "launch": flight[i, 6].item()}
+                       if flown[i] else {}),
                     "pts": pack(mm), "sc": pack(sc[i, :L].float()),
                 }
             )

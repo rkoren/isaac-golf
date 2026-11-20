@@ -19,17 +19,20 @@ class Club:
     stance: float                      # [m] ankle to ankle
     head_size: tuple[float, float, float]  # [m] collider: face normal, toe-heel, height
     mass: float                        # [kg]
-    loft_deg: float                    # visual for now; launch angle comes with Phase 2
+    loft_deg: float                    # loft for launch angle and spin (flight/)
     smash_max: float                   # ball speed / head speed, dead centre
     look: str                          # "driver" | "iron"
-    tee: bool
+    tee: bool                          # False: the ball rests on the ground (analytic turf)
+    trackman: str                      # row of flight/data.py whose spin rate this club's is calibrated on
 
 
 CLUBS = {
-    "driver": Club(0.85, 42.0, 0.089, 0.25, 0.40, (0.04, 0.10, 0.05), 0.31, 10.5, 1.47, "driver", True),
-    "7iron": Club(0.69, 34.0, 0.025, 0.24, 0.34, (0.02, 0.065, 0.04), 0.40, 34.0, 1.33, "iron", True),
-    "pw": Club(0.66, 32.0, 0.025, 0.23, 0.30, (0.02, 0.065, 0.042), 0.42, 46.0, 1.24, "iron", True),
+    "driver": Club(0.85, 42.0, 0.089, 0.25, 0.40, (0.04, 0.10, 0.05), 0.31, 10.5, 1.47, "driver", True, "Driver"),
+    "7iron": Club(0.69, 34.0, 0.0213, 0.24, 0.34, (0.02, 0.065, 0.04), 0.40, 34.0, 1.33, "iron", False, "7 Iron"),
+    "pw": Club(0.66, 32.0, 0.025, 0.23, 0.30, (0.02, 0.065, 0.042), 0.42, 46.0, 1.24, "iron", True, "PW"),
 }
+CLUBS["7iron_arm"] = CLUBS["7iron"]  # trial: the 7-iron addressed with a straight lead arm
+CLUBS["driver_arm"] = CLUBS["driver"]  # trial: the driver addressed the same way
 
 
 WRIST = "lead_wrist" 

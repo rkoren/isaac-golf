@@ -128,6 +128,8 @@ const M = DATA.meta, NP = DATA.nPts, BALL = NP - 1, NSC = 7;
 const SC = { club: 0, ball: 1, dist: 2, torso: 3, armed: 4, impacted: 5, reward: 6 };
 const MPH = 2.23694, mph = v => `${(v * MPH).toFixed(1)} mph`;  // data is m/s
 const off = d => `${Math.abs(d).toFixed(0)}&deg; ${d >= 0 ? "right" : "left"}`;  // + = right of target
+const YD = 1.09361, yd = m => `${(m * YD).toFixed(0)} yd`;  // flight distances are m
+const side = m => `${Math.abs(m * YD).toFixed(1)} yd ${m >= 0 ? "right" : "left"}`;
 const COLORS = { core: "#e9a35b", lead: "#d9722f", trail: "#f4c590", shaft: "#cfd5dd", head: "#3a414d" };
 const OUTLINE = "rgba(40, 24, 10, .55)";
 const CLUB_HEAD = DATA.prims.find(p => p.k === "box" && p.part === "club");
@@ -401,6 +403,11 @@ function drawHud(ep, t) {
       ? `<div class="row"><span class="k">smash factor</span><span>${ep.smash.toFixed(2)}</span></div>` : "") +
     (ep.offline !== undefined && ep.smash && ep.struck && t >= ep.struck.frame
       ? `<div class="row"><span class="k">offline</span><span>${off(ep.offline)}</span></div>` : "") +
+    (ep.carry !== undefined && ep.struck && t >= ep.struck.frame
+      ? `<div class="row"><span class="k">carry</span><span>${yd(ep.carry)} &middot; lands ${side(ep.side)}</span></div>` +
+        `<div class="row"><span class="k">curve</span><span>${side(ep.curve)}</span></div>` +
+        `<div class="row"><span class="k">launch, spin</span><span>${ep.launch.toFixed(1)}&deg; &middot; ` +
+        `${ep.spin.toFixed(0)} rpm, axis ${off(ep.axis)}</span></div>` : "") +
     `<div class="chips">${armed ? '<span class="chip armed">ARMED</span>' : ""}${hit ? '<span class="chip hit">CONTACT</span>' : ""}` +
     `${ep.struck && t >= ep.struck.frame ? strikeChip(ep) : ""}</div>`;
 }
@@ -472,6 +479,12 @@ function renderSidebar() {
     ...(s.mean_smash ? [["Smash factor, mean strike", s.mean_smash.toFixed(2)]] : []),
     ...(s.backwards_rate !== undefined ? [["Hit backwards", pct(s.backwards_rate)]] : []),
     ...(s.mean_offline_deg !== undefined ? [["Offline, mean strike", `${s.mean_offline_deg.toFixed(0)}&deg; (mean ${off(s.offline_bias_deg)})`]] : []),
+    ...(s.mean_carry !== undefined ? [
+      ["Carry, mean (10th pct)", `${yd(s.mean_carry)} (${yd(s.carry_p10)})`],
+      ["Lands, mean", `${side(s.mean_side)} (|${(s.side_abs * YD).toFixed(1)}| yd)`],
+      ["Curve, mean", side(s.mean_curve)],
+      ["Launch, spin", `${s.mean_launch_deg.toFixed(1)}&deg;, ${s.mean_spin_rpm.toFixed(0)} rpm, axis ${off(s.mean_axis_deg)}`],
+    ] : []),
     ["Ball speed, mean max", mph(s.mean_max_ball_speed)],
     ["Clubhead, mean max", mph(s.mean_max_club_speed)],
     ...(s.mean_impact_time ? [
@@ -501,7 +514,8 @@ function renderSidebar() {
     `<span class="rk">#${e.rank}</span>` +
     `<span><div class="nums">paid ${mph(e.paid)}` +
     `${e.smash ? ` &middot; smash ${e.smash.toFixed(2)}` : ` &middot; closest ${e.minDist.toFixed(3)} m`}` +
-    `${e.smash && e.offline !== undefined ? ` &middot; ${off(e.offline)}` : ""}</div>` +
+    `${e.smash && e.offline !== undefined ? ` &middot; ${off(e.offline)}` : ""}` +
+    `${e.carry !== undefined ? ` &middot; ${yd(e.carry)}, ${side(e.side)}` : ""}</div>` +
     `<div class="badges">${strikeChip(e)}${e.fell ? '<span class="chip fell">fell</span>' : ""}` +
     `<span class="sub">club ${mph(e.maxClub)}</span></div></span>` +
     `</div>`).join("");

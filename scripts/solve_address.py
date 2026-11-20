@@ -17,6 +17,7 @@ import contextlib
 import json
 import math
 import sys
+from pathlib import Path
 
 import torch
 
@@ -30,6 +31,8 @@ ap.add_argument("--elite", type=float, default=0.03)
 ap.add_argument("--club", default="driver", help="key into envs/golf/clubs.py")
 ap.add_argument("--ball_gap", type=float, default=0.02, help="air between clubface and ball at address [m]")
 ap.add_argument("--knee_deg", type=float, default=25.0, help="knee flex at address")
+ap.add_argument("--lead_elbow_deg", type=float, default=-1.0, help="lead elbow bend at address; below 0 free")
+ap.add_argument("--out", default=None, help="address json path (default envs/golf/address/<club>.json)")
 add_launcher_args(ap)
 args, extra = ap.parse_known_args()
 sys.argv = [sys.argv[0]] + [a for a in extra if "=" in a and not a.startswith("-")]
@@ -110,6 +113,7 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
     foot_r = next(c[2] for c in caps if c[3] == "left_foot")
     mass = u.robot.data.body_mass.torch[0]
     knee_target = math.radians(args.knee_deg)
+    lua_i, lla_i = (u.robot.find_bodies([b])[0][0] for b in ("left_upper_arm", "left_lower_arm"))
 
     lo = torch.tensor([s[1] for s in SEARCH], device=dev)
     hi = torch.tensor([s[2] for s in SEARCH], device=dev)
@@ -158,6 +162,8 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
 
         # hands where a golfer holds them; the ball is derived from this
         cost = 20.0 * torch.sum((lead - hand_target) ** 2, dim=-1)
+        if not club.tee:  # ball on the ground: the sole rests on it, so hold the head height to the millimetre
+            cost += 400.0 * (lead[:, 2] - hand_target[2]) ** 2
         # both feet flat on the ground, toes forward
         for f in (fl, fr):
             cost += 8.0 * (f[..., 2].min(dim=1).values - foot_r) ** 2
@@ -170,6 +176,11 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
             flex = torch.arccos(torch.nn.functional.cosine_similarity(
                 p[:, knee] - p[:, hip], p[:, foot] - p[:, knee], dim=-1).clamp(-1.0, 1.0))
             cost += 4.0 * (flex - knee_target) ** 2
+        if args.lead_elbow_deg >= 0:
+            # a straight lead arm, so the swing's pull doesn't lengthen it into the ground at impact
+            bend = torch.arccos(torch.nn.functional.cosine_similarity(
+                p[:, lla_i] - p[:, lua_i], lead - p[:, lla_i], dim=-1).clamp(-1.0, 1.0))
+            cost += 8.0 * (bend - math.radians(args.lead_elbow_deg)) ** 2
         com = (p * mass.view(1, -1, 1)).sum(1) / mass.sum()
         support = torch.cat([fl, fr], 1)[..., :2].mean(1)
         cost += 20.0 * torch.sum((com[:, :2] - support) ** 2, dim=-1)
@@ -229,7 +240,7 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
     print(f"hand->clubhead distance {torch.linalg.norm(d).item():.4f} m   (club grip length {GRIP_Z})")
     print(f"clubhead->ball {torch.linalg.norm(ball - clubhead).item():.4f} m   (face gap {args.ball_gap} m)")
     # full shift incl. x/y: score() recentred the feet on the origin
-    out = ADDRESS_DIR / f"{args.club}.json"
+    out = Path(args.out) if args.out else ADDRESS_DIR / f"{args.club}.json"
     out.parent.mkdir(exist_ok=True)
     out.write_text(json.dumps({
         "root_pos": [round(shift[0, 0].item(), 3), round(shift[0, 1].item(), 3), round(EVAL_Z + shift[0, 2].item(), 3)],
@@ -249,4 +260,7 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
         q2 = p[0, idx]
         print(f"  {label:11} ({q2[0]:+.3f}, {q2[1]:+.3f}, {q2[2]:+.3f})")
     print(f"  hands apart {torch.linalg.norm(p[0, u._trail_idx] - p[0, u._lead_idx]).item():.3f} m")
+    sh, el = p[0, lua_i], p[0, lla_i]
+    bend = torch.arccos(torch.nn.functional.cosine_similarity(el - sh, lead - el, dim=0).clamp(-1.0, 1.0))
+    print(f"  lead elbow bend {math.degrees(bend.item()):.1f} deg")
     print(f"  lowest body z {p[0, :, 2].min().item():+.3f}   torso-pelvis {(p[0, torso_i, 2] - p[0, pelvis_i, 2]).item():+.3f} m")

@@ -15,6 +15,8 @@ from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
 from envs.golf.clubs import ADDRESS_DIR, CLUBS, WRIST, Club, golfer_usd
 
 SHAFT_R = 0.015  # collider
+GROUND_SHAFT_Z0 = 0.06  # [m] ball on the ground: shaft collider starts above the hosel, clear of a divot
+HEAD_SHARE = 0.62       # ball on the ground: head's share of the club mass, as a real iron (~265 of ~430 g)
 WRIST_LIMITS = (-25.0, 70.0)  # [deg] from the address angle
 REPO = Path(__file__).resolve().parents[1]
 UPSTREAM = "{ISAAC}/Robots/IsaacSim/Humanoid/humanoid.usd"
@@ -138,6 +140,21 @@ def iron_look(xf: float, loft_deg: float):
     return ([lean(p) for p in verts], faces), lean(np.array([xf - 0.008, heel - 0.002, 0.008]))
 
 
+def club_mass_props(club, spec: Club) -> None:
+    """Authored mass properties: head box at the origin plus a thin shaft rod up to the grip."""
+    m = spec.mass
+    mh, mr = HEAD_SHARE * m, (1.0 - HEAD_SHARE) * m
+    a, b, c = spec.head_size
+    length = spec.grip
+    zc = mr * length / 2 / m
+    rod = mr * length**2 / 12 + mr * (length / 2 - zc) ** 2 + mh * zc**2
+    api = UsdPhysics.MassAPI(club)
+    api.CreateCenterOfMassAttr(Gf.Vec3f(0.0, 0.0, zc))
+    api.CreateDiagonalInertiaAttr(Gf.Vec3f(mh * (b * b + c * c) / 12 + rod, mh * (a * a + c * c) / 12 + rod,
+                                           mh * (a * a + b * b) / 12 + mr * SHAFT_R**2 / 2))
+    api.CreatePrincipalAxesAttr(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+
+
 def build_golfer(humanoid_rel: str, out: Path, spec: Club, weld_rot, wrist: bool = False) -> None:
     stage = Usd.Stage.CreateNew(str(out))
     UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
@@ -156,12 +173,18 @@ def build_golfer(humanoid_rel: str, out: Path, spec: Club, weld_rot, wrist: bool
     head.CreateSizeAttr(1.0)
     head.AddScaleOp().Set(Gf.Vec3f(*spec.head_size))  # cube size is edge length
     UsdPhysics.CollisionAPI.Apply(head.GetPrim())
-    shaft_len = spec.grip - 0.01
+    z0 = 0.0
+    if not spec.tee:
+        # ball on the ground: the head is the strike and turf proxy only (analytic), never touching the ground
+        UsdPhysics.CollisionAPI(head.GetPrim()).CreateCollisionEnabledAttr(False)
+        club_mass_props(club, spec)
+        z0 = GROUND_SHAFT_Z0
+    shaft_len = spec.grip - 0.01 - z0
     shaft = UsdGeom.Capsule.Define(stage, "/golfer/club/shaft")
     shaft.CreateRadiusAttr(SHAFT_R)
     shaft.CreateHeightAttr(shaft_len)
     shaft.CreateAxisAttr(UsdGeom.Tokens.z)
-    shaft.AddTranslateOp().Set(Gf.Vec3d(0, 0, shaft_len / 2 + SHAFT_R))
+    shaft.AddTranslateOp().Set(Gf.Vec3d(0, 0, z0 + shaft_len / 2 + SHAFT_R))
     UsdPhysics.CollisionAPI.Apply(shaft.GetPrim())
     for g in (head, shaft):
         g.CreatePurposeAttr(UsdGeom.Tokens.guide)

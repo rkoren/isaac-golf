@@ -1,0 +1,45 @@
+{
+  "root_pos": [
+    0.132,
+    0.008,
+    1.175
+  ],
+  "root_rot": [
+    -0.0812,
+    0.4111,
+    -0.0528,
+    0.9065
+  ],
+  "joint_pos": {
+    "lower_waist:0": 0.069,
+    "lower_waist:1": -0.668,
+    "pelvis": 0.151,
+    "right_thigh:0": -0.053,
+    "left_thigh:0": -0.167,
+    "right_thigh:1": -0.517,
+    "left_thigh:1": -0.51,
+    "right_foot:0": -0.175,
+    "right_foot:1": 0.008,
+    "left_foot:0": -0.165,
+    "left_foot:1": -0.088,
+    "right_shin": -0.507,
+    "left_shin": -0.494,
+    "left_upper_arm:0": 0.533,
+    "left_upper_arm:2": 0.317,
+    "left_lower_arm": -1.565,
+    "right_upper_arm:0": 0.924,
+    "right_upper_arm:2": 0.282,
+    "right_lower_arm": -1.288
+  },
+  "ball_pos": [
+    0.618,
+    0.061,
+    0.022
+  ],
+  "weld_rot": [
+    0.22617,
+    0.7225,
+    0.65027,
+    -0.06319
+  ]
+}
