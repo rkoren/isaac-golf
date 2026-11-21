@@ -42,7 +42,7 @@ out = MEDIA / f"{time.strftime('%Y-%m-%d')}_{args.stage}_{run.name}"
 out.mkdir(parents=True, exist_ok=True)
 REPLAY = ("club", "wrist", "muscle", "muscle_k", "damping_scale", "leg_damping_scale", "impact_arm_dist",
           "max_depenetration_velocity", "motor_noise", "motor_noise_tau", "ball_forward", "wrist_gear", "flight_obs",
-          "turf_area")
+          "turf_area", "ankle_gear", "grip_spring", "grip_damping", "grip_max_force", "gravity_obs", "ball_ref_obs")
 
 
 def replay_overrides(r: Path) -> list[str]:

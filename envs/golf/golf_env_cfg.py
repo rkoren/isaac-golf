@@ -140,6 +140,7 @@ class GolfEnvCfg(DirectRLEnvCfg):
     wrist_gear: float = WRIST_GEAR      # [N*m] lead wrist strength
     knee_gear: float = 90.0             # [N*m] knee strength (stock humanoid 90; hip extension 135)
     waist_gear: float = 67.5            # [N*m] waist twist and bend strength (stock humanoid 67.5)
+    ankle_gear: float = 22.5            # [N*m] ankle strength (stock humanoid 22.5)
     max_depenetration_velocity: float = 1.0  # [m/s] physx overlap push-out; 10 let the golfer launch itself
     club: str = "driver"                # key into clubs.py; apply_club() sets everything club-specific
     ball_pos: tuple[float, float, float] = BALL_POS
@@ -173,6 +174,9 @@ class GolfEnvCfg(DirectRLEnvCfg):
     takeaway_weight: float = 0.0        # per (m/s) per second: head speed above takeaway_speed while going back
     takeaway_speed: float = 4.5         # [m/s] ~10 mph, a real backswing's pace
     trail_hand_weight: float = 0.2      # encourage right hand on the grip
+    grip_spring: float = 0.0            # [N/m] spring from the trail hand to its address spot on the grip; 0 = off
+    grip_damping: float = 20.0          # [N*s/m]
+    grip_max_force: float = 300.0       # [N]
     # balance: 0 from scratch, 10 when resuming from a striking checkpoint
     stand_weight: float = 0.0           # torso below stand_height [per m]
     stand_height: float = 0.95          # [m] address torso is ~1.18
@@ -210,6 +214,8 @@ class GolfEnvCfg(DirectRLEnvCfg):
     face_launch_weight: float = 0.85    # start direction: face vs path
     flight: bool = True                 # Phase 2 flight per strike (launch angle, spin, curve, carry): metrics only
     flight_obs: bool = False            # observe the computed carry, side and launch after impact (+3 obs)
+    gravity_obs: bool = False           # observe which way the torso tilts: gravity's x, y in the torso frame (+2 obs)
+    ball_ref_obs: bool = False          # observe club and torso from the ball's rest spot (the struck ball flies off)
     # ball on the ground (clubs with tee=False): the head never collides with the ground, the turf is analytic
     turf_grace: float = 0.003           # [m] head depth below the ground that cuts nothing (grass tips)
     turf_area: float = 0.0              # [m^2] turf cut just before the ball (depth x travel) that takes ball speed
@@ -265,8 +271,10 @@ def apply_body(cfg: GolfEnvCfg) -> None:
         **{k: v * cfg.damping_scale for k, v in SWING_DAMPING.items()},
         **{k: v * legs for k, v in LEG_DAMPING.items()},
     }
-    cfg.observation_space = (84 if cfg.wrist else 81) + (3 if cfg.flight_obs else 0)
-    cfg.joint_gears = {**JOINT_GEARS, ".*_shin": cfg.knee_gear, ".*_waist.*": cfg.waist_gear}
+    cfg.observation_space = (84 if cfg.wrist else 81) + (3 if cfg.flight_obs else 0) + (2 if cfg.gravity_obs else 0)
+    cfg.joint_gears = {
+        **JOINT_GEARS, ".*_shin": cfg.knee_gear, ".*_waist.*": cfg.waist_gear, ".*_foot.*": cfg.ankle_gear,
+    }
     if not cfg.wrist:
         return
     act.damping[WRIST] = WRIST_DAMPING * cfg.damping_scale

@@ -2192,3 +2192,72 @@ Through impact (12 viewer swings, knee flexion 0° straight):
   action std down to 0.09. Its last stage ends at 1.42 s (6487; ball 84 mph, 102 yd, 76% good strikes, 7% thin).
   Verdict: posture pay fixed the bow and gave the best iron balance yet (falls ~1.4 s after impact against
   `i7ah2`'s 1.07 s), but every swing still falls within 3 s, now off the trail leg.
+
+## Flailing: a one-handed swing, half-blind balance, weak ankles (i7an, i7gr) — 2026-11-20
+
+- **What flails** (`i7spx11`, 12 viewer swings, medians while the torso is above 0.6 m): the lead foot is 0.23 m up by
+  0.4 s after impact and ~0.6 m by 0.6 s, while the golfer stands on its trail leg. The trail hand leaves the grip in
+  the backswing:
+
+  | hands apart | address | mid-backswing | top | impact | +0.2 s |
+  |---|---|---|---|---|---|
+  | `i7spx11` | 0.10 m | 0.47 | 0.59 | 0.75 | 1.31 |
+  | `i7a2` | | | | 0.63 | |
+  | `balfix3` (driver) | | | | 0.87 | |
+
+  Every policy so far swings one-handed with a free trail arm. `trail_hand_weight` (0.2 per m per second) costs ~0.25
+  points per swing against ~100 for the strike.
+- **What the policy can't sense:** it observed the torso's tilt as one number (the up-projection), not which way it
+  tilts, and its only fixed reference was the live ball, which after impact flies off at ~38 m/s (gravity-free, never
+  stopped). Through the finish two of its position inputs read the ball tens of metres away and receding.
+- **What the body can't do:** the ankles are 22.5 N·m on a 40.8 kg body (density 1000 over `humanoid.usda`'s shapes).
+  On one foot that moves the centre of pressure ~6 cm from the ankle; the toe is 17 cm ahead of it, the heel 10 cm
+  behind. People balance by ankle torque first, then hips and arms, then stepping; a body that can use a third of its
+  foot is left with the last two.
+- **Knobs (off by default):**
+  - `env.gravity_obs`: gravity's x and y in the torso frame (+2 observations; `widen_obs.py <ckpt> 2 <out>` to resume).
+  - `env.ball_ref_obs`: club and torso measured from the ball's rest spot instead of the live ball (identical before
+    impact).
+  - `env.ankle_gear` (stock 22.5): at 60 one foot can put its pressure 15 cm ahead of the ankle and anywhere over the
+    heel.
+  - `env.grip_spring` [N/m], `grip_damping` (20 N·s/m), `grip_max_force` (300 N): every physics substep a force pulls
+    the trail hand to its address spot on the grip (club frame, the median over the first reset) and the club back by
+    the same force. No joint, so no closed loop for the solver. `Metrics/trail_grip_cm` logs the gap in every run. Smoke
+    test, random actions at full noise: 6–7 cm at 1000 N/m against 55–58 cm without.
+- **Chains** (`i7sp`'s recipe otherwise, compared with `i7sp1`–`3` at the same iterations: median fall 0.70 / 0.82 /
+  0.90 s at 1497 / 1996 / 2495):
+  - `i7an`: gravity obs, ball reference, ankles 60, from `i7a_strike` (widened by 2).
+  - `i7gr`: the same plus `grip_spring=1000`, from scratch (its own 600-iteration strike stage).
+- **`i7an` results (256 swings each):**
+
+  | | 1497 | 1996 | 2495 |
+  |---|---|---|---|
+  | `i7sp`: falls, median fall after impact | 100%, 0.70 s | 100%, 0.82 s | 100%, 0.90 s |
+  | `i7an`: falls, median fall after impact | 100%, 1.80 s | 7% | 6% |
+  | `i7an`: ball, smash, carry | 69 mph, 1.17, 66 yd | 70 mph, 1.19, 70 yd | 71 mph, 1.20, 72 yd |
+
+  At 1497 the gain is real: the weight is 0.63 of the way to the lead foot at impact (`i7sp`: 0.51), the lead foot
+  lifts 0.3 m and steps ~0.6 m toward the target, lands by 0.8 s, and it stands tall (torso ~1.15 m) until ~1.2 s,
+  then sinks and falls ~1.8 s after impact, later than the 6,000-iteration posture run (1.42 s). **From 1996 it leans on
+  the club:** by ~1.2 s after impact it squats on a wide stance (pelvis 0.82 → 0.65 m, knees bent, feet 0.5–0.7 m from
+  address) and plants the club, the head 5 cm into the ground where the shaft's collider meets it, and stays propped
+  for the rest of the 3 s (extrapolated CoM off the feet 98% of upright time: the club is the third leg). It costs
+  ~13 mph of ball against `i7sp` (club 62 vs 70 mph, launch 15° vs ~26°, attack −7°, hooks 50–86%). The trail hand
+  still lets go (0.4–0.8 m from the lead hand).
+- **`i7gr` results:** the gripped strike stage is shorter and slower (iteration 599: contact 83%, clubhead 39 mph,
+  backswing 1.29 m, against `i7a_strike`'s 93%, 56 mph, 1.74 m), the trail hand drifting 7 → 10.5 cm off its grip spot
+  as it stretches the spring for more swing. The full-swing stage gets the backswing back (1.8 m).
+
+  | `i7gr` | 1497 | 1996 | 2495 |
+  |---|---|---|---|
+  | falls, tall finishes | 25%, 67% | 1%, 99% | 1%, 99% |
+  | ball, smash, carry | 64 mph, 1.12, 64 yd | 64 mph, 1.16, 65 yd | 64 mph, 1.16, 64 yd |
+  | face-to-path, slices | +17.8°, 100% | +17.1°, 100% | +16.8°, 100% |
+
+  No cane: the club stays in the air. Hands 0.13–0.22 m apart (0.10 at address), against `i7an`'s 0.4–0.8 m. But the
+  finish is not a golf finish: it stays near address height (torso 1.10 m, head 1.28 m, pelvis 0.80 m), the torso
+  0.4 m back from address on the trail side and the weight 0.3–0.45 of the way to the lead foot, chopping the club up
+  and down in front of itself ~4 times a second (from the grip pointing up to the head back down through the ball's
+  spot) while the lead foot creeps 0.2 → 0.8 m. The trail foot leaves the ground in every downswing (up to 0.14–0.18 m)
+  and lands ~0.5 m away. Two hands turn the path across the ball: 14° out-to-in with the face 3° open, every shot a
+  slice, good strikes 32–53% (thin 22–38%).

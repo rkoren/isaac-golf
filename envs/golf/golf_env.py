@@ -96,6 +96,8 @@ class GolfEnv(DirectRLEnv):
         self.grounded = torch.ones(self.num_envs, 4, dtype=torch.bool, device=self.device)
         self.motor_n = torch.zeros(self.num_envs, self.robot.num_joints, device=self.device)
         self.motor_rho = math.exp(-self.cfg.sim.dt / self.cfg.motor_noise_tau)
+        self.grip_off = None  # trail hand's address spot on the grip, club frame (set at the first reset)
+        self.grip_gap = torch.zeros(self.num_envs, device=self.device)
 
         box = next(s for s in body_shapes(self.cfg.scene.robot.spawn.usd_path)[CLUB_BODY] if s[0] == "box")
         self.head_half = torch.tensor(
@@ -160,6 +162,21 @@ class GolfEnv(DirectRLEnv):
             self.motor_n.mul_(rho).add_(torch.randn_like(self.motor_n), alpha=math.sqrt(1.0 - rho * rho))
             forces = forces * (1.0 + self.cfg.motor_noise * self.motor_n)
         self.robot.actuators.target_command.set_effort_index(value=forces)
+        if self.cfg.grip_spring > 0 and self.grip_off is not None:
+            self._grip_spring()
+
+    def _grip_spring(self) -> None:
+        # trail hand pulled to its spot on the grip, the club pulled back (a second weld closes a loop PhysX can't hold)
+        d, c, h = self.robot.data, self._club_idx, self._trail_idx
+        r = quat_apply(d.body_link_quat_w.torch[:, c], self.grip_off.expand(self.num_envs, 3))
+        spot = d.body_link_pos_w.torch[:, c] + r
+        spot_vel = d.body_link_lin_vel_w.torch[:, c] + torch.linalg.cross(d.body_link_ang_vel_w.torch[:, c], r, dim=-1)
+        hand = d.body_link_pos_w.torch[:, h]
+        f = self.cfg.grip_spring * (spot - hand) + self.cfg.grip_damping * (spot_vel - d.body_link_lin_vel_w.torch[:, h])
+        f = f * (self.cfg.grip_max_force / torch.linalg.norm(f, dim=-1, keepdim=True).clamp_min(1e-6)).clamp(max=1.0)
+        self.robot.instantaneous_wrench_composer.set_forces_and_torques_index(
+            forces=torch.stack((f, -f), dim=1), positions=torch.stack((hand, spot), dim=1), body_ids=[h, c], is_global=True
+        )
 
     def _compute_intermediate_values(self):
         self.torso_pos = self.robot.data.root_pos_w.torch
@@ -176,6 +193,9 @@ class GolfEnv(DirectRLEnv):
         self.club_quat = self.robot.data.body_link_quat_w.torch[:, self._club_idx]
         self.lead_pos = self.robot.data.body_link_pos_w.torch[:, self._lead_idx]
         self.trail_pos = self.robot.data.body_link_pos_w.torch[:, self._trail_idx]
+        if self.grip_off is not None:
+            spot = self.club_pos + quat_apply(self.club_quat, self.grip_off.expand(self.num_envs, 3))
+            self.grip_gap = torch.linalg.norm(self.trail_pos - spot, dim=-1)
         self.feet_xy = self.robot.data.body_link_pos_w.torch[:, self._feet_idx, :2]
         self.feet_z = self.robot.data.body_link_pos_w.torch[:, self._feet_idx, 2]
         # spine tilt: the pelvis-to-head line off vertical
@@ -404,6 +424,7 @@ class GolfEnv(DirectRLEnv):
         self.tracer.set_visibility(True)
 
     def _get_observations(self) -> dict[str, torch.Tensor]:
+        ref = self.tee_pose[:, :3] if self.cfg.ball_ref_obs else self.ball_pos
         obs = torch.cat(
             (
                 self.torso_pos[:, 2].view(-1, 1),
@@ -413,9 +434,9 @@ class GolfEnv(DirectRLEnv):
                 self.dof_pos_scaled,
                 self.dof_vel * self.cfg.dof_vel_scale,
                 self.actions,
-                self.club_pos - self.ball_pos,
+                self.club_pos - ref,
                 self.club_vel * self.cfg.clubhead_vel_scale,
-                self.ball_pos - self.torso_pos,
+                ref - self.torso_pos,
                 (self.episode_length_buf / self.max_episode_length).view(-1, 1),
             ),
             dim=-1,
@@ -425,6 +446,8 @@ class GolfEnv(DirectRLEnv):
             k, f = FLIGHT_KEYS.index, self.flight_out
             fl = torch.stack((f[:, k("carry")] / 100.0, f[:, k("side")] / 20.0, f[:, k("launch_deg")] / 20.0), dim=-1)
             obs = torch.cat((obs, fl), dim=-1)
+        if self.cfg.gravity_obs:
+            obs = torch.cat((obs, self.robot.data.projected_gravity_b.torch[:, :2]), dim=-1)
         return {"policy": obs}
 
     def _get_rewards(self) -> torch.Tensor:
@@ -545,6 +568,7 @@ class GolfEnv(DirectRLEnv):
         log["Reward/clubhead_speed"] = speed.mean()
         log["Reward/takeaway"] = -takeaway.mean()
         log["Reward/trail_hand"] = -trail.mean()
+        log["Metrics/trail_grip_cm"] = 100.0 * self.grip_gap.mean()
         log["Reward/stand"] = -stand.mean()
         log["Reward/feet"] = -feet.mean()
         log["Reward/lead_foot"] = -lead.mean()
@@ -729,6 +753,10 @@ class GolfEnv(DirectRLEnv):
             loft = math.radians(CLUBS[self.cfg.club].loft_deg)
             self.loft_normal = math.sin(loft) * up / up.norm()
             self.loft_normal[0] = math.cos(loft)
+        if self.grip_off is None:
+            # median over the jittered resets: one spot on the grip
+            rel = quat_apply_inverse(self.club_quat[env_ids], self.trail_pos[env_ids] - self.club_pos[env_ids])
+            self.grip_off = rel.median(0).values
         if self.cfg.motor_noise > 0:
             self.motor_n[env_ids] = torch.randn_like(self.motor_n[env_ids])
         self.prev_club_pos[env_ids] = self.club_pos[env_ids]
