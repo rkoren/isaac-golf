@@ -12,12 +12,19 @@ from pathlib import Path
 import numpy as np
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
 
-from envs.golf.clubs import ADDRESS_DIR, CLUBS, WRIST, Club, golfer_usd
+from envs.golf.clubs import CLUBS, WRIST, Club, address, golfer_usd
 
 SHAFT_R = 0.015  # collider
 GROUND_SHAFT_Z0 = 0.06  # [m] ball on the ground: shaft collider starts above the hosel, clear of a divot
 HEAD_SHARE = 0.62       # ball on the ground: head's share of the club mass, as a real iron (~265 of ~430 g)
 WRIST_LIMITS = (-25.0, 70.0)  # [deg] from the address angle
+# full arms (--arms full)
+TWIST_LIMIT = 75.0            # [deg] upper-arm twist each way
+ELBOW_STRAIGHT = -109.0       # [deg] stock -90 leaves 19.5 deg of bend; -109.47 is straight
+WRIST_AT = 0.77               # wrist pivot along elbow -> hand centre (0.24 of 0.31 m, as a person's wrist-to-grip)
+LEAD_COCK = (-30.0, 80.0)     # [deg] from address, about the club's toe-heel axis
+LEAD_BOW = (-45.0, 45.0)      # [deg]
+TRAIL_WRIST = (-60.0, 60.0)   # [deg] both axes
 REPO = Path(__file__).resolve().parents[1]
 UPSTREAM = "{ISAAC}/Robots/IsaacSim/Humanoid/humanoid.usd"
 
@@ -155,7 +162,58 @@ def club_mass_props(club, spec: Club) -> None:
     api.CreatePrincipalAxesAttr(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
 
 
-def build_golfer(humanoid_rel: str, out: Path, spec: Club, weld_rot, wrist: bool = False) -> None:
+def d6_joint(stage, path: str, body0: str, body1: str, pos0, pos1, rot, limits: dict[str, tuple[float, float]]):
+    """Joint with free rotation axes (limits [deg]) and every other axis locked; rot = joint frame in both bodies."""
+    j = UsdPhysics.Joint.Define(stage, path)
+    j.CreateBody0Rel().SetTargets([Sdf.Path(body0)])
+    j.CreateBody1Rel().SetTargets([Sdf.Path(body1)])
+    j.CreateLocalPos0Attr(Gf.Vec3f(*pos0))
+    j.CreateLocalPos1Attr(Gf.Vec3f(*pos1))
+    j.CreateLocalRot0Attr(rot)
+    j.CreateLocalRot1Attr(rot)
+    for axis in ("transX", "transY", "transZ", "rotX", "rotY", "rotZ"):
+        lo, hi = limits.get(axis, (1.0, -1.0))  # low > high locks the axis
+        lim = UsdPhysics.LimitAPI.Apply(j.GetPrim(), axis)
+        lim.CreateLowAttr(lo)
+        lim.CreateHighAttr(hi)
+        if axis in limits:
+            UsdPhysics.DriveAPI.Apply(j.GetPrim(), axis).CreateTypeAttr("force")  # gains from the actuator cfg
+    return j
+
+
+def frame_quat(x, y) -> Gf.Quatf:
+    """Rotation whose X axis is x and Y axis is y projected off x (USD w, x, y, z)."""
+    x = np.asarray(x, float) / np.linalg.norm(x)
+    y = np.asarray(y, float) - np.dot(y, x) * x
+    y /= np.linalg.norm(y)
+    m = Gf.Matrix3d(*np.stack([x, y, np.cross(x, y)]).flatten().tolist())  # rows: row-vector convention
+    q = m.ExtractRotation().GetQuat()
+    return Gf.Quatf(q.GetReal(), *q.GetImaginary())
+
+
+def full_arms(stage, weld_rot) -> None:
+    """Upper-arm twist, elbows that straighten, and a 2-axis wrist on each hand, pivoting where a person's does."""
+    for side in ("left", "right"):
+        sh = stage.OverridePrim(f"/golfer/joints/{side}_upper_arm")
+        sh.CreateAttribute("limit:rotY:physics:low", Sdf.ValueTypeNames.Float).Set(-TWIST_LIMIT)
+        sh.CreateAttribute("limit:rotY:physics:high", Sdf.ValueTypeNames.Float).Set(TWIST_LIMIT)
+        UsdPhysics.DriveAPI.Apply(sh, "rotY").CreateTypeAttr("force")
+        stage.OverridePrim(f"/golfer/joints/{side}_lower_arm").CreateAttribute(
+            "physics:lowerLimit", Sdf.ValueTypeNames.Float).Set(ELBOW_STRAIGHT)
+        stage.OverridePrim(f"/golfer/joints/{side}_hand").SetActive(False)
+        # stock hand joint offset on the forearm; the wrist pivots WRIST_AT of the way to the hand centre
+        to_hand = np.array([0.18, 0.18 if side == "right" else -0.18, 0.18])
+        if side == "left":
+            # cock about the club's toe-heel axis at address (today's hinge), bow/cup perpendicular to it
+            toe_heel = Gf.Quatf(*weld_rot).GetInverse().Transform(Gf.Vec3f(0, 1, 0))
+            rot, limits = frame_quat(to_hand, list(toe_heel)), {"rotY": LEAD_COCK, "rotZ": LEAD_BOW}
+        else:
+            rot, limits = frame_quat(to_hand, [0.0, -1.0, 1.0]), {"rotY": TRAIL_WRIST, "rotZ": TRAIL_WRIST}
+        d6_joint(stage, f"/golfer/joints/{side}_wrist", f"/golfer/{side}_lower_arm", f"/golfer/{side}_hand",
+                 WRIST_AT * to_hand, (WRIST_AT - 1.0) * to_hand, rot, limits)
+
+
+def build_golfer(humanoid_rel: str, out: Path, spec: Club, weld_rot, wrist: bool = False, arms: str = "stock") -> None:
     stage = Usd.Stage.CreateNew(str(out))
     UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
     UsdGeom.SetStageMetersPerUnit(stage, 1.0)
@@ -211,7 +269,9 @@ def build_golfer(humanoid_rel: str, out: Path, spec: Club, weld_rot, wrist: bool
     rod(stage, "/golfer/club/grip_look", grip_end - 0.18 * up, grip_end, 0.0105,
         material(stage, f"{looks}/rubber", (0.04, 0.04, 0.04), 0.8))
 
-    if wrist:
+    if arms == "full":
+        full_arms(stage, weld_rot)
+    if wrist and arms != "full":
         # hinge about the club's toe-heel axis: the swing plane at address (shaft + face normal)
         weld = UsdPhysics.RevoluteJoint.Define(stage, f"/golfer/{WRIST}")
         weld.CreateAxisAttr(UsdPhysics.Tokens.y)
@@ -246,6 +306,8 @@ if __name__ == "__main__":
     ap.add_argument("--club", default="all", help=f"one of {list(CLUBS)} or all")
     ap.add_argument("--revendor", action="store_true", help="refetch the humanoid even if vendored")
     ap.add_argument("--wrist", action="store_true", help="hinge the club to the lead hand instead of welding it")
+    ap.add_argument("--arms", default="stock", choices=("stock", "full"),
+                    help="full: upper-arm twist, straightening elbows, 2-axis wrists on both hands (club welded)")
     a = ap.parse_args()
 
     assets = Path(a.assets)
@@ -257,11 +319,10 @@ if __name__ == "__main__":
 
     for name in CLUBS if a.club == "all" else [a.club]:
         # weld from the club's solved address; before its first solve, borrow the driver's
-        solved = ADDRESS_DIR / f"{name}.json"
-        weld_rot = json.loads((solved if solved.exists() else ADDRESS_DIR / "driver.json").read_text())["weld_rot"]
-        out = Path(golfer_usd(name, a.wrist))
+        weld_rot = address(name, a.arms)["weld_rot"]
+        out = Path(golfer_usd(name, a.wrist, a.arms))
         if a.assets != str(REPO / "assets"):
             out = assets / out.name
         out.unlink(missing_ok=True)
-        build_golfer("./humanoid.usda", out, CLUBS[name], weld_rot, a.wrist)
+        build_golfer("./humanoid.usda", out, CLUBS[name], weld_rot, a.wrist, a.arms)
         print(f"wrote {out}")

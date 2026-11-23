@@ -25,6 +25,7 @@ ap.add_argument("run", nargs="+", help="run dir(s) in training order, e.g. logs/
 ap.add_argument("--stage", required=True, help="curriculum stage label, e.g. stage0")
 ap.add_argument("--note", default="", help="one line for the index")
 ap.add_argument("--max_ckpts", type=int, default=4, help="checkpoints to film, spread first to last")
+ap.add_argument("--iters", type=int, nargs="+", help="film exactly these iterations (overrides --max_ckpts)")
 ap.add_argument("--video_length", type=int, default=300, help="env steps per clip (60 per second)")
 ap.add_argument("--existing", action="store_true", help="copy clips/viewer already in the run dir")
 args = ap.parse_args()
@@ -35,14 +36,18 @@ iteration = lambda p: int(re.search(r"(\d+)$", p.stem).group(1))
 ckpts = sorted((c for r in runs for c in r.glob("model_*.pt")), key=iteration)
 if not ckpts:
     sys.exit(f"no checkpoints in {args.run}")
-n = min(args.max_ckpts, len(ckpts))
-ckpts = sorted({ckpts[round(i * (len(ckpts) - 1) / max(n - 1, 1))] for i in range(n)}, key=iteration)
+if args.iters:
+    ckpts = [c for c in ckpts if iteration(c) in args.iters]
+else:
+    n = min(args.max_ckpts, len(ckpts))
+    ckpts = sorted({ckpts[round(i * (len(ckpts) - 1) / max(n - 1, 1))] for i in range(n)}, key=iteration)
 
 out = MEDIA / f"{time.strftime('%Y-%m-%d')}_{args.stage}_{run.name}"
 out.mkdir(parents=True, exist_ok=True)
 REPLAY = ("club", "wrist", "muscle", "muscle_k", "damping_scale", "leg_damping_scale", "impact_arm_dist",
           "max_depenetration_velocity", "motor_noise", "motor_noise_tau", "ball_forward", "wrist_gear", "flight_obs",
-          "turf_area", "ankle_gear", "grip_spring", "grip_damping", "grip_max_force", "gravity_obs", "ball_ref_obs")
+          "turf_area", "ankle_gear", "grip_spring", "grip_damping", "grip_max_force", "gravity_obs", "ball_ref_obs",
+          "arms")
 
 
 def replay_overrides(r: Path) -> list[str]:

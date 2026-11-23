@@ -31,6 +31,9 @@ WRIST_GEAR = 10.0       # [N*m]
 WRIST_VMAX = 30.0       # [rad/s]
 WRIST_STIFFNESS = 2.0   # [N*m/rad] toward the address angle
 WRIST_DAMPING = 0.5     # [N*m*s/rad] scaled with the swing joints
+# full arms
+TWIST_GEAR = 45.0       # [N*m] upper-arm twist, ~2/3 of the other shoulder axes as in people
+FULL_JOINTS = 27        # 21 stock + 2 upper-arm twists + 2 wrists x 2 axes
 
 GOLFER_CFG = ArticulationCfg(
     prim_path="{ENV_REGEX_NS}/Robot",

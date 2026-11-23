@@ -160,6 +160,8 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
         shift = torch.zeros(N, 2, device=u.device)  # CoM share from trail to lead foot
         outside = torch.zeros(N, 2, device=u.device)  # upright frames after impact
         trail_lift = torch.zeros(N, device=u.device)  # trail sole's highest low point before impact [m]
+        caned = torch.zeros(N, dtype=torch.bool, device=u.device)  # shaft on the ground after impact
+        still = torch.zeros(N, 2, device=u.device)  # body speed summed over upright frames from still_after, frames
         flight = torch.zeros(N, len(FLIGHT_KEYS), device=u.device)  # flight/ per strike, FLIGHT_KEYS
         ground = getattr(u, "ground", False)  # ball on the ground: strike class, leading edge [m], turf factor
         strike_cls = torch.zeros(N, dtype=torch.long, device=u.device)
@@ -216,6 +218,11 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
                     up = alive & u.impacted & (d.root_pos_w.torch[:, 2] >= 0.6)
                     outside += torch.stack([up & (u.xcom_out > 0), up], -1).float()
                     trail_lift = torch.where(alive, u.trail_lift, trail_lift)
+                if hasattr(u, "caned") and t > 0:
+                    # still up: a club that drops after a fall leans on nothing
+                    caned |= alive & u.caned & (d.root_pos_w.torch[:, 2] >= 0.6)
+                    settled = up & (u.post_impact > round(u.cfg.still_after / u.step_dt))
+                    still += torch.stack([u.body_speed * settled, settled.float()], -1)
                 sc[alive, t, :6] = row[alive]
                 length += alive.long()
                 if t == T - 1:
@@ -318,6 +325,8 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
             "mean_trail_lift_m": trail_lift[hit].mean().item() if hit.any() else 0.0,
             "trail_off_share": (trail_lift[hit] > 0.03).float().mean().item() if hit.any() else 0.0,
             "fell_rate": fell.float().mean().item(),
+            "cane_rate": caned.float().mean().item(),
+            "finish_body_speed": (still[:, 0].sum() / still[:, 1].sum().clamp_min(1)).item(),
             "median_fall_after_impact": fall_after.nanmedian().item() if down.any() else 0.0,
             "mean_finish_torso": finish_torso.mean().item(),
             "tall_finish_rate": (finish_torso >= 0.9).float().mean().item(),
@@ -337,6 +346,7 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
                         "carry_p10": fl["carry"].quantile(0.1).item(), "side_abs_p90": fl["side"].abs().quantile(0.9).item()}
         print(
             f"[{ckpt.stem}] contact {summary['contact_rate']:.0%}  fell {summary['fell_rate']:.0%}  "
+            f"leaned on the club {summary['cane_rate']:.0%}  "
             f"torso at finish {summary['mean_finish_torso']:.2f} m  "
             f"ball {MPH * summary['mean_max_ball_speed']:.1f} mph (best {MPH * summary['best_ball_speed']:.1f})  "
             f"club {MPH * summary['mean_max_club_speed']:.1f} mph  closest {summary['mean_min_dist']:.3f} m  "
@@ -377,7 +387,8 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
             f"    balance: weight on lead side {summary['mean_shift_impact']:.2f} at impact, "
             f"{summary['mean_shift_finish']:.2f} at a held finish (0 trail foot, 1 lead foot)  "
             f"extrapolated CoM off the feet {summary['xcom_outside_share']:.0%} of upright time after impact  "
-            f"trail foot off the ground before impact {summary['trail_off_share']:.0%} (highest {summary['mean_trail_lift_m']:.2f} m)"
+            f"trail foot off the ground before impact {summary['trail_off_share']:.0%} (highest {summary['mean_trail_lift_m']:.2f} m)  "
+            f"body speed in the finish {summary['finish_body_speed']:.2f} m/s"
         )
         if "strike_classes" in summary:
             classes = "  ".join(f"{k} {v:.0%}" for k, v in summary["strike_classes"].items())

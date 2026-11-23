@@ -38,14 +38,20 @@ CLUBS["driver_arm"] = CLUBS["driver"]  # trial: the driver addressed the same wa
 WRIST = "lead_wrist" 
 
 
-def golfer_usd(club: str, wrist: bool = False) -> str:
-    return str(ASSETS_DIR / f"golfer_{club}{'_wrist' if wrist else ''}.usda")
+def golfer_usd(club: str, wrist: bool = False, arms: str = "stock") -> str:
+    suffix = "_full" if arms == "full" else "_wrist" if wrist else ""
+    return str(ASSETS_DIR / f"golfer_{club}{suffix}.usda")
 
 
-def address(club: str) -> dict:
+def address_path(club: str, arms: str = "stock") -> Path:
+    return ADDRESS_DIR / f"{club}{'_full' if arms == 'full' else ''}.json"
+
+
+def address(club: str, arms: str = "stock") -> dict:
     """Solved address (scripts/solve_address.py): root pose, joints, ball, weld."""
-    path = ADDRESS_DIR / f"{club}.json"
-    if not path.exists():  # unsolved club: start from the driver's (the solver's first pass)
-        print(f"[WARN] no address for {club}, using the driver's")
-        path = ADDRESS_DIR / "driver.json"
+    path = address_path(club, arms)
+    if not path.exists():  # unsolved: the stock body's, then the driver's (the solver's first pass)
+        fallback = address_path(club) if address_path(club).exists() else ADDRESS_DIR / "driver.json"
+        print(f"[WARN] no address {path.name}, using {fallback.name}")
+        path = fallback
     return json.loads(path.read_text())

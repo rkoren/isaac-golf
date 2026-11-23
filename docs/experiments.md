@@ -2261,3 +2261,265 @@ Through impact (12 viewer swings, knee flexion 0° straight):
   spot) while the lead foot creeps 0.2 → 0.8 m. The trail foot leaves the ground in every downswing (up to 0.14–0.18 m)
   and lands ~0.5 m away. Two hands turn the path across the ball: 14° out-to-in with the face 3° open, every shot a
   slice, good strikes 32–53% (thin 22–38%).
+- **No cane, and a still finish (knobs, off by default):** `env.no_cane` counts the shaft touching the ground (its
+  collider's lowest point within `cane_clear`, 1 cm) from `cane_grace` (0.25 s) after impact as a fall: the fall
+  penalty, and the end of the episode with `fall_terminate`. The flag is computed in every run (`Metrics/cane_rate`,
+  `record_swings.py`'s "leaned on the club"); on 64 swings, `i7an2` 100%, `i7gr3` 2%. `env.still_weight` pays per
+  second from `still_after` (0.5 s) after impact, × upright, exp(−body speed / `still_speed`), body speed being the
+  mass-weighted rms speed of every link, club included (`Metrics/finish_body_speed`, "body speed in the finish":
+  `i7an2` 0.36 m/s propped, `i7gr3` 0.93 m/s chopping; a held pose should read ~0.1). Pay, not a cost, for the usual
+  reason.
+- **`i7anc`:** `i7an1` (1497) + `no_cane`, two 500-iteration stages exactly as `i7an2`/`i7an3` otherwise.
+  **`i7grs`:** `i7gr3` (2495) + `no_cane` + `still_weight=40`, action std back to 0.25, two 500-iteration stages.
+- **`i7anc` results (no cane):**
+
+  | | 1996 | 2495 |
+  |---|---|---|
+  | `i7sp`: falls, median fall | 100%, 0.82 s | 100%, 0.90 s |
+  | `i7an` (cane allowed): falls | 7% (propped) | 6% (propped) |
+  | `i7anc`: falls, median fall, tall finishes | 94%, 1.95 s, 4% | 60%, 2.55 s, 32% |
+  | `i7anc`: ball, carry, smash p10 | 70 mph, 71 yd, 1.06 | 72 mph, 77 yd, 1.12 |
+
+  Without the cane it learns to stand: at 2495 a third of swings hold a tall 3 s finish (torso ~1.18 m, head 1.40 m
+  through 1.8 s), the weight 0.89 of the way to the lead foot at a held finish (a golfer's 0.85–0.9), after a step of
+  the lead foot ~0.3 m toward the target that then stays planted. 11% of swings touch the shaft down while still up
+  (`record_swings.py` now counts the cane only above the 0.6 m fall line; a club dropping after a fall leaned on
+  nothing, which first read 31%). Still one-handed, still hooking (face-to-path −7°), ~12 mph of ball below `i7sp`, and
+  still improving fast between stages (falls 94% → 60%).
+  Its finish doesn't chop (`i7grs` does): across all 256 swings it brings the club down once from the follow-through
+  (head 1.4 m up at 0.2 s after impact, falling at ~7 m/s at 0.28 s, 0.34 m by 0.4 s) and holds the head ~0.33 m above the turf, ~0.3 m/s of drift. The head (no collider) dips below
+  the turf at some point in 21% of swings (0.4% of a held finish's time) and the shaft touches in 11%; both are
+  twice as common in the swings that fall (28% / 14%) as in those that hold (12% / 5%), so it isn't standing on them.
+- **`i7anc` continued (2026-11-21):** three more 500-iteration stages from `i7anc3` model_2495, settings unchanged
+  (`i7anc4`–`i7anc6`), 256-swing evals:
+
+  | | 2495 | 2994 | 3493 | 3992 |
+  |---|---|---|---|---|
+  | falls, tall finishes | 60%, 32% | 16%, 83% | 11%, 89% | 3%, 96% |
+  | shaft on the ground while up | 11% | 1% | 2% | 1% |
+  | finish body speed | 0.65 m/s | 0.49 | 0.42 | 0.36 |
+  | weight at a held finish (0 trail, 1 lead) | 0.89 | 0.64 | 0.60 | 0.63 |
+  | ball, carry | 72 mph, 77 yd | 71, 74 | 69, 70 | 69, 70 |
+  | face-to-path, hooks | −6.8°, 68% | −9.2°, 95% | −9.2°, 93% | −8.5°, 89% |
+  | good / fat / thin strikes | 71/29/0% | 75/25/1% | 80/17/3% | 69/26/5% |
+
+  It stands now, and with the club still and off the ground, but the finish has changed: both feet step toward the
+  target (lead 0.5 m, trail following 0.4 m, against 0.33 / 0.27 m at 2495), which is why the weight reads central
+  (it is measured between where the feet are), and over the 3 s it slowly sinks onto the trail knee (pelvis 0.84 →
+  0.73 m, trail knee 0.43 → 0.33 m, torso still ~1.07 m at 2.5 s). Still one-handed (hands 0.6 m apart). Shaft-side
+  strikes (the ball nearest the hosel) rose 8% → 17%. Best iron balance: `i7anc6` model_3992.
+- **The right hand on A (`i7ag`, `i7agn`, 2026-11-21):** from `i7anc6` model_3992, `i7anc`'s settings plus
+  `env.grip_spring` stiffened over three 500-iteration stages, 200 → 500 → 1000 N/m (damping 20, cap 300 N), so the
+  swing adapts to the hand instead of relearning (`i7gr` had the grip from iteration 0 and learned a chopping slice).
+  The two chains differ only in exploration: `i7ag` keeps the std A ended with (0.072; it shrank by itself from 0.25),
+  `i7agn` starts at 0.25 (`set_action_std.py`). Evals run each stage with its own spring (`cont_chain4.sh`).
+- **First stage, 200 N/m (iteration 4491):**
+
+  | | `i7anc6` (no spring) | `i7ag1` (std 0.07) | `i7agn1` (std 0.25) |
+  |---|---|---|---|
+  | falls, tall finishes | 3%, 96% | 81%, 19% | 50%, 45% |
+  | ball, carry | 69 mph, 70 yd | 46 mph, 36 yd | 49 mph, 42 yd |
+  | good / thin / top strikes | 69/5/0% | 7/49/44% | 37/51/9% |
+  | hands apart at impact, in the finish | ~0.6 m, 0.6 m | 0.20 m, 0.5–0.6 m | 0.23 m, 0.6 m |
+
+  Even the softest spring knocks the swing over: the hands come together for the strike, the club comes in high
+  (thin and topped), the trail foot leaves the ground before impact on almost every swing, and in the finish the
+  trail hand is pulled back off the grip against the spring (in training the gap grew 18 → 34–36 cm over the stage,
+  while episodes lengthened ~95 → 131–136 steps, both chains still falling on most swings). Exploration noise
+  matters for re-adapting: `i7agn1` recovered much further, so `i7ag` was stopped there (its 500 N/m stage killed
+  early). Its slot went to `i7agh`: `i7agn1` held at 200 N/m for two more stages, against `i7agn` stiffening on
+  schedule, to see whether balance should recover before each step up.
+- **Results (256-swing evals, high-noise chains):**
+
+  | | `i7agn1` 200 | `i7agn2` 500 | `i7agn3` 1000 | `i7agh2` 200 | `i7agh3` 200 |
+  |---|---|---|---|---|---|
+  | iteration | 4491 | 4990 | 5489 | 4990 | 5489 |
+  | falls, tall finishes | 50%, 45% | 51%, 47% | 94%, 5% | 36%, 64% | 16%, 84% |
+  | ball, carry | 49 mph, 42 yd | 49, 44 | 52, 50 | 53, 50 | 54, 53 |
+  | good / thin strikes | 37/51% | 41/38% | 24/56% | 43/49% | 45/39% |
+  | hands apart at impact, finish | 0.23, 0.6 m | 0.20, 0.5 | 0.17, 0.13–0.20 | 0.18, 0.57 | 0.23, 0.59 |
+  | face-to-path, straight | −5.9°, 1% | −5.8°, 2% | −2.0°, 45% | −7.0°, 0% | −6.3°, 0% |
+
+  At 200 and 500 N/m balance comes back only as the trail hand leaves the grip in the finish: in training the
+  hand-to-spot gap grows over each stage (`i7agn2` 18 → 31 cm, `i7agh3` 19 → 41 cm) as falls drop. At 1000 N/m it
+  can't let go (10 cm), shots fly straight (45%, face-to-path −2°) and training falls stay at 97–98% through the
+  stage: this body hasn't found a stance with the trail arm tied to the club (no trail wrist, one-way elbows; `i7gr`,
+  two-handed from scratch, stood only by not turning through). Holding at 200 N/m recovers balance (`i7agh3`: 16%
+  falls, 84% tall) as a two-handed strike with a one-handed finish, at ~15 mph less ball than `i7anc6` and weaker
+  strikes (45% good vs 69%).
+- **Would a trail wrist help? (measured on `i7agn3`, 256 swings, `arm_limits.py` in the session scratchpad)** No: the
+  spring pulls on one point, so the trail hand already pivots freely on the grip (a ball joint, as free as a real wrist
+  plus forearm). What limits it is the arms working against each other: the trail hand sits ~10 cm from its spot all
+  swing (~100 N of spring), and from impact on the lead shoulder is at full torque 97% of the time (`i7anc6`, no
+  spring: 37%) and half the finish (8%). Just after impact, when a golfer extends both arms, the grip spot is beyond
+  the trail arm's reach 27% of the time (by up to ~3 cm; longest shoulder-to-hand 0.615 m, the elbows stopping at
+  ~18° of bend). The arms are crude for a two-handed swing: 2-DoF shoulders with no upper-arm twist, elbows that never
+  straighten, a 1-DoF lead wrist. `i7anc6` in its finish rests its arms on their limits (trail elbow folded ~100°).
+- **`i7grs` results (no cane, still 40):** 0% / 2% falls at 2994 / 3493, 98–99% tall, but the finish body speed only
+  goes 0.93 → 0.86 → 0.80 m/s and the chop stays. It is the lead elbow: it bends and straightens through ~95° about
+  twice a second (the trail arm following on the spring), the wrist moving much less; `i7anc`'s lead elbow holds ~20°
+  through its finish. The weight stays central at the finish (0.42–0.49), the trail foot still leaves the ground in
+  every downswing (0.21–0.23 m), 100% slices, 62–65 mph. Still pay at 40 can't buy the arms still; the pumping is
+  presumably part of how it stays up.
+
+## Full arms for a two-handed swing (i7fa, i7fo) — 2026-11-21
+
+**Why:** with the right hand held on (`grip_spring`), the stock arms couldn't stand through a two-handed finish (the
+grip-curriculum results above). A trail wrist alone wouldn't help, since the spring is already a free ball joint. What
+blocked it: the arms pull against each other through the club, and the trail arm runs out of reach just after impact.
+The stock shoulders have 2 axes, the elbows never straighten, and there are no wrists.
+
+**The body (`env.arms=full`, CLAUDE.md "Full arms"):**
+- each shoulder's locked third axis unlocked, ±75° at 45 N·m;
+- elbows straighten to −109° (from 19.5° of bend at the stock limit to ~1–2°);
+- 2-axis wrists on both hands, pivoting 7.2 cm before the hand centre: lead cock −30..+80° about the club's toe-heel
+  axis, bow/cup ±45°; trail ±60°; all 10 N·m;
+- club welded to the lead hand, trail hand on `grip_spring`.
+
+27 actions, 99 observations. Checked in the sim:
+- 27 DOFs with the authored limits;
+- elbow at −109° measures 1.3–2.3° of bend (reach 0.614 → 0.623 m);
+- a wrist at 40° moves its hand 4.7 cm;
+- shoulder axis 1 at 60° turns the forearm 50–58°, but also swings the upper arm 17–23°, because PhysX measures it about
+  the rest-pose arm axis.
+
+**Address (`7iron_arm_full.json`):** zero overlapping limbs, lead elbow 5°, trail hand 5.5 cm down the shaft and 1.5 cm
+off it (target 8.5 cm; the solver was still creeping), face 2 cm from the ball, stance 0.34 m, knees 25°, spine 39°.
+Zero actions for 2 s with gravity and the spring at 1000 N/m: it collapses forward, like the stock body (which falls
+backward), with the hands held ~7 cm apart and no blow-up. Random actions at 1000 N/m: trail hand 5.2–5.3 cm from its
+spot (stock arms 6–7 cm). The stock body is unchanged: `i7anc6` model_3992's 256-swing eval reproduces exactly.
+
+**Chains (from scratch, `i7_chain5.sh`):** strike 600 → full 300 → balance 600 + 500 → 500 more, `BCAP=1.8`, with
+`i7gr`'s settings (`club=7iron_arm`, ankle 60, gravity and ball-ref observations, posture 40, trail foot 200, ball pay 6,
+backswing 50, takeaway 10), plus `env.arms=full env.wrist=False env.no_cane=True` from iteration 0.
+- `i7fa`: `grip_spring=1000` from iteration 0. Its control is `i7gr` (stock arms, same recipe).
+- `i7fo`: no grip, one-handed. Its controls are `i7an`/`i7anc`, to pin a failure of `i7fa` on the arms or on the grip.
+- **Strike stage (600):**
+
+  | contact rate | 300–399 | 500–599 | backswing at 599 |
+  |---|---|---|---|
+  | `i7gr` (stock arms, grip) | 59% | 95% | 1.29 m |
+  | `i7fa` (full arms, grip) | 46% | 82% (91% in the last 20) | 1.02 m |
+  | `i7fo` (full arms, one hand) | 16% | 50% (61% in the last 20) | 0.49 m |
+
+  The two-handed golfer learns to strike nearly as fast as with the stock arms. The one-handed one learns a short jab,
+  and at the full-swing stage (strikes count only after a 1 m backswing) its contact went 61% → 3% → 0% within 20
+  iterations, so it was stopped there. It got a bridge stage instead (`i7fo_strike2`): 400 more strike iterations
+  from model_599, with strikes counting after 0.6 m and the backswing paid up to 1.8 m (`impact_arm_dist=0.6
+  backswing_weight=50 backswing_cap=1.8`), then the chain as planned.
+  The bridge ended at 79% contact with a 1.84 m backswing (contact 32% → 53% → 79% over its 400 iterations), and
+  the full-swing stage then held 82–89% through its first 60 iterations. `i7fa`'s full stage ended at 94% contact,
+  backswing 1.73 m, trail hand 11 cm from its spot, face-to-path +4.2° (`i7gr`: 98%, 1.76 m, 13 cm, +7.7°).
+- **`i7fa` results (two-handed, 256-swing evals):**
+
+  | | `i7fa1` 1497 | `i7fa2` 1996 | `i7fa3` 2495 | `i7gr2` 1996 (stock arms) | `i7anc6` 3992 (stock, one hand) |
+  |---|---|---|---|---|---|
+  | falls, tall finishes | 100%, 0% | 86%, 11% | **21%, 75%** | 1%, 99% | 3%, 96% |
+  | median fall after impact | 0.88 s | 1.88 s | 1.85 s | — | 1.87 s |
+  | ball, club | 96, 79 mph | 99, 81 | **98, 81** | 64, 59 | 69, 61 |
+  | carry, smash | 101 yd, 1.27 | 105, 1.27 | **105, 1.26** | — | 70, 1.20 |
+  | face-to-path, slices | +10.2°, 99% | +8.0°, 87% | +7.6°, 77% (22% fades) | +17.1°, 100% | −8.5°, 89% hooks |
+  | hands apart at impact, finish | 0.13, 0.20 m | 0.12, 0.27 | 0.12, 0.26 | — | 0.6, 0.6 |
+
+  Two hands on the new arms give the fastest, longest iron yet: about 30 mph and 35 yd more than any stock-arm
+  golfer, smash 1.26, the trail hand on the grip through impact (in the finish it drifts ~20 cm off its spot). Balance
+  came late and fast. Through both balance stages it fell on nearly every swing in training (episodes 43 → 124 steps,
+  against `i7gr`'s 102 → 202), then in the last 500 iterations falls went 86% → 21%. A held finish is tall (torso
+  ~1.0 m, head 1.22 m for the full 3 s), the lead foot stays planted (0.12 m, against `i7anc6`'s 0.5 m step), and the
+  extrapolated CoM is off the feet only 12% of upright time (`i7anc6` 79%). The trail foot leaves the ground in every
+  downswing (to 0.08 m), and a third of strikes register nearest the shaft (the face offset is still only +0.2 cm
+  heel). Still improving at the end.
+- **`i7fo` results (one-handed control, 256-swing evals):** `i7fo1` 1896 / `i7fo2` 2395 / `i7fo3` 2894: falls 99% /
+  99% / 91%, the club on the ground while up 100% / 50% / 61%, median fall 1.43 / 1.70 / 1.93 s after impact, ball
+  70–71 mph, carry 73–74 yd, slices 98–100% (face-to-path +13°). With straight elbows and loose wrists a relaxed lead
+  arm lets the club hang to within ~4 cm of the turf, so in training nearly every early episode ended on the cane
+  rule just after its 0.25 s grace (episodes ~50 steps); it learns to hold the club up only slowly. **Two hands are
+  what make the new arms work:** the trail hand holds the club up (cane 3–7%) and the two-handed golfer is faster,
+  straighter and far better balanced than the one-handed one on the same body.
+- **`i7fa` continued (`i7fa4`–`i7fa6`):** three more 500-iteration stages from model_2495, settings unchanged
+  (`cont_chain4.sh`), 256-swing evals:
+
+  | | 2994 | 3493 | 3992 |
+  |---|---|---|---|
+  | falls, tall finishes | **6%, 93%** | 8%, 90% | 11%, 88% |
+  | ball, carry, smash | 96 mph, 102 yd, 1.25 | 96, 101, 1.25 | 97, 102, 1.24 |
+  | good / fat / thin strikes | 44/9/47% | 41/13/46% | 51/11/39% |
+  | face-to-path, slice / fade | +8.4°, 86/13% | +7.7°, 73/25% | +7.1°, 68/30% |
+  | extrapolated CoM off the feet | 5% | 6% | 7% |
+  | shaft on the ground while up | 1% | 4% | 6% |
+
+  Balance peaks at 2994 and then drifts (the finish settles from a 1.01 to a 0.95 m torso), as `balfix3` did on the
+  driver: stop near 3,000. A held finish keeps the lead foot planted (~0.1 m) and the hands 0.25–0.29 m apart (the
+  trail hand ~20 cm off its spot, held there by the arm against ~220 N of spring; see the grip measurement below). Left to fix: the strike (about half thin since 2994, the
+  leading edge ~6 mm above the ball's tangent point) and the slice (face-to-path +7–8°, curving ~10 yd right). Best
+  two-handed iron: `i7fa4` model_2994.
+
+## Fine-tunes of the two-handed iron: slice, thin strikes, grip (i7fs, i7ft, i7fg) — 2026-11-22
+
+From `i7fa4` model_2994, settings unchanged except the one knob, two 500-iteration stages each (`cont_chain4.sh`),
+action std left at 0.13, so the unchanged continuation `i7fa5`/`i7fa6` is the control. 256-swing evals.
+
+- **New knobs (off by default):** `env.side_sigma` [m] multiplies the ball pay by exp(−(side/σ)²), the computed
+  flight's landing side, curve included (a slice that starts on line still pays less). `env.thin_sigma` [m] multiplies
+  it by exp(−(e/σ)²), e being how far the leading edge meets the ball above the face's tangent point r(1 − sin dynamic
+  loft), the thin line of the strike classes; fat and good strikes are untouched (fat already loses ball speed through
+  `turf_area`). Both are multiplicative quality terms on a golfer whose shots are already decent.
+- **Why thin went unpunished:** at 2994 the leading edge met the ball +7 mm up on average, right at the thin line
+  (7.2 mm at its 41.6° dynamic loft), so about half the strikes were thin. The launch model's smash only looks at
+  where the ball sits on the face (centred within 0.4 cm), so a thin strike cost nothing.
+- **Grip spring, measured on 2994 (128 swings, scratchpad `grip_force.py`):** the trail hand sits 11 cm from its spot
+  before impact (median; p90 20 cm), 21 cm in the half second after it (p90 34 cm), and a steady 22 cm through the held
+  finish (p90 23 cm). The finish pull is ~220 N, nearly all spring, and the 300 N cap binds on 1% of finish steps (23%
+  just after impact). So the arm holds the hand off against the spring; raising the cap alone would change only the
+  half second after impact. `i7fg` doubles both (2000 N/m, 600 N).
+
+| | control `i7fa5` 3493 | `i7fs1` 3493 (side 10 m) | `i7fs2` 3992 | **`i7ft1` 3493 (thin 5 mm)** | `i7ft2` 3992 |
+|---|---|---|---|---|---|
+| falls, tall finishes | 8%, 90% | 9%, 91% | 11%, 89% | **4%, 95%** | 10%, 90% |
+| ball, carry | 96 mph, 101 yd | 85 mph, 92 yd | 83 mph, 89 yd | 96.5 mph, 104 yd | 96.6 mph, 102 yd |
+| good / fat / thin / top | 41/13/46/0% | 12/1/64/23% | 19/11/58/11% | **64/27/9/0%** | 59/29/12/0% |
+| leading edge at impact | +6 mm | +16 mm | +11 mm | +2 mm | +2 mm |
+| strike, heel | 0.5 cm | 2.4 cm | 2.3 cm | 0.3 cm | 0.2 cm |
+| face / path | +0.6° / −7.2° | −2.1° / −7.8° | −2.0° / −8.0° | −1.1° / −7.7° | +0.2° / −7.8° |
+| slice / fade | 73/25% | 46/51% | 53/44% | 62/37% | 79/21% |
+| lands (side) | +9.0 yd | +0.2 yd | −0.2 yd | +4.9 yd | +8.7 yd |
+
+- **`i7fs` (landing side in metres) found a loophole:** the shots land on the line, partly from a real 2° closed face
+  (a pull-fade), but mostly by striking worse: off the heel, thin and topped, a ball 12 mph slower and lower that has
+  less distance to curve. A side measured in metres pays a shorter shot for being short. Replaced by `env.land_sigma`
+  [deg], the same factor on the landing point's angle off the line, atan(side/carry), which a shorter shot doesn't
+  change (smoke-tested only).
+- **`i7ft` (thin) worked in one stage:** 46% → 9% thin with the ball speed, smash and carry kept, and the best balance
+  of any two-handed run. The mix (64% good, 27% fat, 9% thin) matches Corke's turf strikes (63/32/5). The leading edge
+  comes down 4 mm, and the face closes ~1°, which brings the side in to +4.9 yd. By 3992 the strike holds but balance
+  and side drift back with the control (10% falls, +8.7 yd): stop near 3,500. **Best two-handed iron: `i7ft1`
+  model_3493.**
+- **`i7fg` (grip spring 2000 N/m, cap 600 N):** the hand stays closer but the pull on it doesn't change. Finish gap
+  22 → 11.5 cm (p90 12.9), finish force 218 → 229 N, cap never reached: the policy holds the hand off with the same
+  ~230 N whatever the stiffness, so doubling it halves the gap. The swing pays for the stronger pull through the club:
+  `i7fg1` 3493 / `i7fg2` 3992: ball 81 / 83 mph (control 96), club 75 / 75 mph, heel 1.7 / 1.3 cm, thin + top 79 /
+  64%, slices 89 / 95% (face-to-path +9.6 / +10.1°), carry 85 / 88 yd; balance unchanged (7 / 10% falls, 93 / 89%
+  tall). 1,000 iterations won back ~1 mph. Not worth it now; a hand held on the grip needs the policy to want it
+  there (a pay for it, or a trail arm that can reach the spot through the finish), not a stiffer spring.
+- **`land_sigma` from `i7ft1` model_3493 (2026-11-22, `i7la` 6°, `i7lb` 4°, `thin_sigma` kept at 5 mm):** two
+  500-iteration stages each in parallel; the control is `i7ft2` (the same start, thin only). At the start the shots land
+  ~3° right of the line, |3.6°| on average.
+
+  | | control `i7ft2` 3992 | **`i7la1` 3992 (6°)** | `i7la2` 4491 | `i7lb1` 3992 (4°) | `i7lb2` 4491 |
+  |---|---|---|---|---|---|
+  | lands (side) | +8.7 yd | **−0.6 yd** (\|4.6\|) | −0.1 (\|4.0\|) | +0.4 (\|4.2\|) | −0.3 (\|3.1\|) |
+  | start line, curve | −2°, +10.6 yd | −3°, +5.4 yd | −3°, +5.8 | −4°, +7.2 | −4°, +6.9 |
+  | face / path | +0.2° / −7.8° | −2.5° / −7.0° | −2.4° / −7.5° | −2.8° / −9.0° | −3.1° / −9.9° |
+  | face-to-path, slice / fade / straight | +8.0°, 79/21/0% | **+4.4°, 21/63/15%** | +5.0°, 33/60/7% | +6.3°, 55/41/4% | +6.8°, 66/33/1% |
+  | good / fat / thin | 59/29/12% | 52/45/3% | 50/43/7% | 55/41/4% | 50/43/7% |
+  | ball, club, carry | 96.6, 81.4 mph, 102 yd | 93.1, 79.5, 103 | 92.8, 78.1, 102 | 93.9, 79.6, 102 | 91.1, 78.9, 99 |
+  | falls, tall finishes | 10%, 90% | 6%, 93% | 7%, 93% | 6%, 93% | 9%, 91% |
+
+  Both land on the line, by different routes. At 6° the slice itself shrinks: the face closes ~1.5° and the path comes
+  ~0.7° less across, so most slices become fades (a pull-fade), with the strike still centred and the carry kept. At
+  4° the cheaper fix wins: the path swings further left (−9 to −10°), so the ball starts left and slices back (a
+  pull-slice), and it deepens with training. Both trade ~3 mph of ball speed and a fatter strike (fat 27% → 41–45%,
+  above Corke's 32%: the thin cost pushes the leading edge down and nothing pushes it back up), and balance holds
+  better than the control. The second stage at 6° holds the line but drifts like every lineage past ~500 fine-tune
+  iterations (slices 21 → 33%, club −1.4 mph). **Best two-handed iron: `i7la1` model_3992** (on line, 21% slices);
+  `i7ft1` model_3493 stays the fastest and best-balanced.

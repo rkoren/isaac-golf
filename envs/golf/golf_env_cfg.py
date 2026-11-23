@@ -19,7 +19,8 @@ from isaaclab_tasks.utils import PresetCfg
 
 from .clubs import CLUBS, WRIST, address, golfer_usd
 from .golfer import (
-    GOLFER_CFG, LEG_DAMPING, STIFFNESS, SWING_DAMPING, WRIST_DAMPING, WRIST_GEAR, WRIST_STIFFNESS, WRIST_VMAX,
+    FULL_JOINTS, GOLFER_CFG, LEG_DAMPING, STIFFNESS, SWING_DAMPING, TWIST_GEAR, WRIST_DAMPING, WRIST_GEAR,
+    WRIST_STIFFNESS, WRIST_VMAX,
 )
 
 # golf ball
@@ -137,6 +138,7 @@ class GolfEnvCfg(DirectRLEnvCfg):
     damping_scale: float = 1.0          # joint damping
     leg_damping_scale: float | None = None  # hips, knees, ankles; None = damping_scale
     wrist: bool = False                 # lead wrist hinge between hand and club (22 actions)
+    arms: str = "stock"                 # "full": upper-arm twist, straightening elbows, 2-axis wrists both hands (27 actions)
     wrist_gear: float = WRIST_GEAR      # [N*m] lead wrist strength
     knee_gear: float = 90.0             # [N*m] knee strength (stock humanoid 90; hip extension 135)
     waist_gear: float = 67.5            # [N*m] waist twist and bend strength (stock humanoid 67.5)
@@ -195,6 +197,12 @@ class GolfEnvCfg(DirectRLEnvCfg):
     balance_airborne: float = 0.10      # [m] counted off the soles while no sole touches the ground
     foot_sole: tuple = (-0.07, 0.14, -0.027)  # [m] heel and toe capsule ends, sole depth, in the foot frame (humanoid.usda)
     fall_terminate: bool = False        # end the episode at that fall (no time spent lying on the ground)
+    no_cane: bool = False               # the shaft touching the ground cane_grace after impact counts as a fall
+    cane_grace: float = 0.25            # [s]
+    cane_clear: float = 0.01            # [m] shaft's lowest point counted as touching
+    still_weight: float = 0.0           # per second from still_after after impact, x upright: exp(-body speed / still_speed)
+    still_speed: float = 0.3            # [m/s] mass-weighted rms link speed (club included)
+    still_after: float = 0.5            # [s] after impact, time to finish the follow-through
     actions_cost_scale: float = 0.005
     energy_cost_scale: float = 0.002
     joint_pos_limits_cost_scale: float = 0.25
@@ -234,6 +242,10 @@ class GolfEnvCfg(DirectRLEnvCfg):
     aim_sigma: float = 0.0              # [deg] ball pay falls off with angle off the target line
     strike_pow: float = 0.0             # ball pay x sweet-spot factor^p (1 = dead centre, as in smash)
     strike_bonus: float = 0.0           # ball pay x (1 + bonus x sweet-spot factor): only adds, so no stand-still trap
+    side_sigma: float = 0.0             # [m] ball pay x exp(-(landing side/σ)²) from the computed flight, curve included; 0 = off
+    land_sigma: float = 0.0             # [deg] the same on the landing point's angle off the line (side/carry): a shorter shot buys nothing
+    thin_sigma: float = 0.0             # [m] ball pay x exp(-(leading edge above the face's tangent point on the ball/σ)²); 0 = off
+    fat_sigma: float = 0.0              # [m] the same for the leading edge below the ground (turf_area charges only turf past turf_grace)
 
     # obs scales
     dof_vel_scale: float = 0.1
@@ -243,9 +255,9 @@ class GolfEnvCfg(DirectRLEnvCfg):
 
 def apply_club(cfg: GolfEnvCfg) -> None:
     """Point the scene at cfg.club: golfer asset, address pose, ball, tee, smash ceiling."""
-    spec, addr = CLUBS[cfg.club], address(cfg.club)
+    spec, addr = CLUBS[cfg.club], address(cfg.club, cfg.arms)
     robot = cfg.scene.robot
-    robot.spawn.usd_path = golfer_usd(cfg.club, cfg.wrist)
+    robot.spawn.usd_path = golfer_usd(cfg.club, cfg.wrist, cfg.arms)
     robot.init_state.pos = tuple(addr["root_pos"])
     robot.init_state.rot = tuple(addr["root_rot"])
     robot.init_state.joint_pos = addr["joint_pos"]
@@ -263,7 +275,7 @@ def apply_club(cfg: GolfEnvCfg) -> None:
 
 
 def apply_body(cfg: GolfEnvCfg) -> None:
-    """Joint damping, depenetration cap, and the lead wrist's actuator and spaces when cfg.wrist."""
+    """Joint damping, depenetration cap, and the wrists' actuators and spaces (cfg.wrist, cfg.arms)."""
     cfg.scene.robot.spawn.rigid_props.max_depenetration_velocity = cfg.max_depenetration_velocity
     act = cfg.scene.robot.actuators["body"]
     legs = cfg.damping_scale if cfg.leg_damping_scale is None else cfg.leg_damping_scale
@@ -271,14 +283,26 @@ def apply_body(cfg: GolfEnvCfg) -> None:
         **{k: v * cfg.damping_scale for k, v in SWING_DAMPING.items()},
         **{k: v * legs for k, v in LEG_DAMPING.items()},
     }
-    cfg.observation_space = (84 if cfg.wrist else 81) + (3 if cfg.flight_obs else 0) + (2 if cfg.gravity_obs else 0)
+    assert cfg.arms in ("stock", "full") and not (cfg.wrist and cfg.arms == "full"), "env.arms=full has its own wrists"
+    joints = FULL_JOINTS if cfg.arms == "full" else 22 if cfg.wrist else 21
+    # per joint: position, velocity, last action plus 18 body, club and ball inputs
+    cfg.observation_space = 18 + 3 * joints + (3 if cfg.flight_obs else 0) + (2 if cfg.gravity_obs else 0)
+    cfg.action_space = joints
     cfg.joint_gears = {
         **JOINT_GEARS, ".*_shin": cfg.knee_gear, ".*_waist.*": cfg.waist_gear, ".*_foot.*": cfg.ankle_gear,
     }
+    if cfg.arms == "full":
+        # regex keys may not overlap
+        gears = {k: v for k, v in cfg.joint_gears.items() if k != ".*_upper_arm.*"}
+        cfg.joint_gears = {**gears, ".*_upper_arm:[02]": JOINT_GEARS[".*_upper_arm.*"], ".*_upper_arm:1": TWIST_GEAR,
+                           ".*_wrist.*": cfg.wrist_gear}
+        act.damping[".*_wrist.*"] = WRIST_DAMPING * cfg.damping_scale
+        act.stiffness = {**STIFFNESS, ".*_wrist.*": WRIST_STIFFNESS}
+        cfg.muscle_vmax = {**MUSCLE_VMAX, ".*_wrist.*": WRIST_VMAX}
+        return
     if not cfg.wrist:
         return
     act.damping[WRIST] = WRIST_DAMPING * cfg.damping_scale
     act.stiffness = {**STIFFNESS, WRIST: WRIST_STIFFNESS}
     cfg.joint_gears = {**cfg.joint_gears, WRIST: cfg.wrist_gear}
     cfg.muscle_vmax = {**MUSCLE_VMAX, WRIST: WRIST_VMAX}
-    cfg.action_space = 22

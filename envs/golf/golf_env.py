@@ -78,6 +78,7 @@ class GolfEnv(DirectRLEnv):
         self.dig_step = torch.zeros(self.num_envs, device=self.device)  # cut deeper than dig_free this step [m^2]
         self.dig_total = torch.zeros(self.num_envs, device=self.device)
         self.leading_edge = torch.zeros(self.num_envs, device=self.device)  # height at impact [m]
+        self.edge_over = torch.zeros(self.num_envs, device=self.device)  # leading edge above thin line at impact [m]
         self.strike_class = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)  # STRIKE_CLASSES
         self.backwards = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self.offline = torch.zeros(self.num_envs, device=self.device)
@@ -99,7 +100,13 @@ class GolfEnv(DirectRLEnv):
         self.grip_off = None  # trail hand's address spot on the grip, club frame (set at the first reset)
         self.grip_gap = torch.zeros(self.num_envs, device=self.device)
 
-        box = next(s for s in body_shapes(self.cfg.scene.robot.spawn.usd_path)[CLUB_BODY] if s[0] == "box")
+        club_shapes = body_shapes(self.cfg.scene.robot.spawn.usd_path)[CLUB_BODY]
+        shaft = next(s for s in club_shapes if s[0] == "cap")
+        self.shaft_ends = torch.tensor([shaft[1], shaft[2]], dtype=torch.float32, device=self.device)  # club frame
+        self.shaft_r = shaft[3]
+        self.caned = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self.body_speed = torch.zeros(self.num_envs, device=self.device)
+        box = next(s for s in club_shapes if s[0] == "box")
         self.head_half = torch.tensor(
             [abs(box[2 + i][i] - box[1][i]) for i in range(3)], dtype=torch.float32, device=self.device
         )
@@ -247,6 +254,16 @@ class GolfEnv(DirectRLEnv):
         lead, trail = self.feet_xy[:, 0], self.feet_xy[:, 1]
         axis = lead - trail
         self.shift = ((com[:, :2] - trail) * axis).sum(-1) / (axis * axis).sum(-1).clamp_min(1e-6)
+        # how still the body is
+        self.body_speed = torch.sqrt((self.mass_frac * (d.body_com_lin_vel_w.torch**2).sum(-1)).sum(-1))
+
+    def _update_cane(self):
+        # using club as cane
+        n = self.num_envs
+        ends = self.club_pos.repeat_interleave(2, 0) + quat_apply(self.club_quat.repeat_interleave(2, 0), self.shaft_ends.repeat(n, 1))
+        low = ends[:, 2].view(n, 2).amin(-1) - self.shaft_r - self.scene.env_origins[:, 2]
+        late = self.post_impact > round(self.cfg.cane_grace / self.step_dt)
+        self.caned |= self.impacted & late & (low < self.cfg.cane_clear)
 
     def _update_contact(self):
         """Arming, strike detection and smash-factor launch. Once per step, after physics."""
@@ -361,6 +378,7 @@ class GolfEnv(DirectRLEnv):
         thin = self.ball_r * (1.0 - sin_loft)  # the face meets the ball below this height
         cls = torch.where(edge < 0.0, 1, torch.where(edge <= thin, 0, torch.where(edge <= self.ball_r, 2, 3)))
         self.leading_edge = torch.where(hit, edge, self.leading_edge)
+        self.edge_over = torch.where(hit, edge - thin, self.edge_over)
         self.strike_class = torch.where(hit, cls, self.strike_class)
         self.turf_factor = torch.where(hit, factor, self.turf_factor)
         return factor
@@ -465,6 +483,18 @@ class GolfEnv(DirectRLEnv):
             ball_speed = ball_speed * self.sweet**self.cfg.strike_pow
         if self.cfg.strike_bonus > 0:
             ball_speed = ball_speed * (1.0 + self.cfg.strike_bonus * self.sweet)
+        if self.cfg.side_sigma > 0:
+            # where it lands, curve included
+            ball_speed = ball_speed * torch.exp(-(self.flight_out[:, FLIGHT_KEYS.index("side")] / self.cfg.side_sigma) ** 2)
+        if self.cfg.land_sigma > 0:
+            side, carry = self.flight_out[:, FLIGHT_KEYS.index("side")], self.flight_out[:, FLIGHT_KEYS.index("carry")]
+            ball_speed = ball_speed * torch.exp(-(torch.rad2deg(torch.atan2(side, carry)) / self.cfg.land_sigma) ** 2)
+        if self.cfg.thin_sigma > 0:
+            # strike height (thin)
+            ball_speed = ball_speed * torch.exp(-(torch.relu(self.edge_over) / self.cfg.thin_sigma) ** 2)
+        if self.cfg.fat_sigma > 0:
+            # strike height (fat)
+            ball_speed = ball_speed * torch.exp(-(torch.relu(-self.leading_edge) / self.cfg.fat_sigma) ** 2)
         backwards = self.cfg.backwards_penalty * (self.new_hit & self.backwards).float() / self.step_dt
         gained = torch.relu(ball_speed - self.max_ball_speed)
         self.max_ball_speed = torch.maximum(self.max_ball_speed, ball_speed)
@@ -499,6 +529,8 @@ class GolfEnv(DirectRLEnv):
         good, bad = self.cfg.spine_good_deg, self.cfg.spine_bad_deg
         tall = torch.clamp((bad - self.spine_deg) / (bad - good), 0.0, 1.0)
         posture = self.cfg.posture_weight * tall * upright * self.impacted.float()
+        settled = self.impacted & (self.post_impact > round(self.cfg.still_after / self.step_dt))
+        still = self.cfg.still_weight * torch.exp(-self.body_speed / self.cfg.still_speed) * upright * settled.float()
         # balance metrics
         balance = self.cfg.balance_weight * self.xcom_out
         on_lead = torch.clamp(self.shift / self.cfg.shift_target, 0.0, 1.0)
@@ -533,7 +565,7 @@ class GolfEnv(DirectRLEnv):
         lead = self.cfg.lead_foot_weight * (slip[:, 0] + torch.relu(lead_lift - self.cfg.lead_foot_lift_free))
         # trail foot: the heel may lift and the foot pivot, the toe stays down
         trail_foot = self.cfg.trail_foot_weight * torch.relu(self.sole_low[:, 1] - self.cfg.trail_lift_free)
-        new_fall = (self.torso_pos[:, 2] < self.cfg.fall_height) & ~self.fallen
+        new_fall = self._down() & ~self.fallen
         self.fallen |= new_fall
         fall = self.cfg.fall_penalty * new_fall.float() / self.step_dt
 
@@ -558,6 +590,9 @@ class GolfEnv(DirectRLEnv):
         log["Reward/attack"] = attack.mean()
         log["Reward/hold"] = hold.mean()
         log["Reward/posture"] = posture.mean()
+        log["Reward/still"] = still.mean()
+        if settled.any():
+            log["Metrics/finish_body_speed"] = self.body_speed[settled].mean()
         if self.impacted.any():
             log["Metrics/spine_deg_after_impact"] = self.spine_deg[self.impacted].mean()
         log["Reward/balance"] = -balance.mean()
@@ -596,6 +631,7 @@ class GolfEnv(DirectRLEnv):
             + attack
             + hold
             + posture
+            + still
             - balance
             + shift
             + impact_shift
@@ -619,16 +655,21 @@ class GolfEnv(DirectRLEnv):
         self._compute_intermediate_values()
         self._update_contact()
         self._update_balance()
+        self._update_cane()
         if self.tracer is not None:
             self._draw_tracer()
         # falling is penalized
         died = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         if self.cfg.fall_terminate:
-            died = self.torso_pos[:, 2] < self.cfg.fall_height
+            died = self._down()
         done = (self.episode_length_buf >= self.max_episode_length) | (
             self.post_impact > self.cfg.post_impact_steps
         )
         return died, done
+
+    def _down(self) -> torch.Tensor:
+        down = self.torso_pos[:, 2] < self.cfg.fall_height
+        return down | self.caned if self.cfg.no_cane else down
 
     def _reset_idx(self, env_ids: Sequence[int] | None):
         if env_ids is None:
@@ -638,6 +679,7 @@ class GolfEnv(DirectRLEnv):
         log["Metrics/contact_rate"] = self.impacted[env_ids].float().mean()
         log["Metrics/min_club_ball_dist"] = self.min_dist[env_ids].mean()
         log["Metrics/fell_rate"] = self.fallen[env_ids].float().mean()
+        log["Metrics/cane_rate"] = self.caned[env_ids].float().mean()
         log["Metrics/lead_foot_moved_m"] = torch.linalg.norm(
             self.feet_xy[env_ids, 0] - self.feet_home[env_ids, 0], dim=-1
         ).mean()
@@ -692,6 +734,7 @@ class GolfEnv(DirectRLEnv):
         index_fill_(self.turf_factor, env_ids, 1.0)
         index_fill_(self.dig_total, env_ids, 0.0)
         index_fill_(self.leading_edge, env_ids, 0.0)
+        index_fill_(self.edge_over, env_ids, 0.0)
         index_fill_(self.strike_class, env_ids, 0)
         index_fill_(self.impacted, env_ids, False)
         index_fill_(self.post_impact, env_ids, 0)
@@ -715,6 +758,7 @@ class GolfEnv(DirectRLEnv):
         index_fill_(self.top_time, env_ids, 0.0)
         index_fill_(self.trail_lift, env_ids, 0.0)
         index_fill_(self.fallen, env_ids, False)
+        index_fill_(self.caned, env_ids, False)
 
         # golfer back to the address pose, offset into its env
         root_pose = self.robot.data.default_root_pose.torch[env_ids].clone()

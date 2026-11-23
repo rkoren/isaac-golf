@@ -32,7 +32,9 @@ ap.add_argument("--club", default="driver", help="key into envs/golf/clubs.py")
 ap.add_argument("--ball_gap", type=float, default=0.02, help="air between clubface and ball at address [m]")
 ap.add_argument("--knee_deg", type=float, default=25.0, help="knee flex at address")
 ap.add_argument("--lead_elbow_deg", type=float, default=-1.0, help="lead elbow bend at address; below 0 free")
-ap.add_argument("--out", default=None, help="address json path (default envs/golf/address/<club>.json)")
+ap.add_argument("--arms", default="stock", choices=("stock", "full"), help="body: full = twisting shoulders, wrists")
+ap.add_argument("--trail_on_shaft", type=float, default=0.085, help="full arms: trail hand this far down the grip [m]")
+ap.add_argument("--out", default=None, help="address json path (default envs/golf/address/<club>[_full].json)")
 add_launcher_args(ap)
 args, extra = ap.parse_known_args()
 sys.argv = [sys.argv[0]] + [a for a in extra if "=" in a and not a.startswith("-")]
@@ -43,7 +45,7 @@ torch.manual_seed(0)
 
 import envs.golf
 from envs.golf.golf_env_cfg import BALL_R
-from envs.golf.clubs import ADDRESS_DIR, CLUBS, golfer_usd
+from envs.golf.clubs import CLUBS, address_path, golfer_usd
 from envs.golf.shapes import capsule_table, collision_pairs, penetrations
 from isaaclab.utils.math import quat_apply
 from isaaclab_tasks.utils import resolve_task_config
@@ -71,13 +73,20 @@ SEARCH = [
     ("right_upper_arm:2", -1.571, 1.222),
     ("right_lower_arm", -1.571, 0.873),
 ]
+if args.arms == "full":
+    # elbows straighten to the new limit; the shoulders' third axis; the trail wrist (the lead stays neutral:
+    # its axes are built from the address hand)
+    SEARCH = [(nm, -1.90, hi) if nm.endswith("_lower_arm") else (nm, lo, hi) for nm, lo, hi in SEARCH]
+    SEARCH += [("left_upper_arm:1", -1.3, 1.3), ("right_upper_arm:1", -1.3, 1.3),
+               ("right_wrist:1", -0.8, 0.8), ("right_wrist:2", -0.8, 0.8)]
  
 EVAL_Z = 5.0
 club = CLUBS[args.club]
-GOLFER_USD = golfer_usd(args.club)
+GOLFER_USD = golfer_usd(args.club, arms=args.arms)
 
 env_cfg, _ = resolve_task_config(args.task, "")
 env_cfg.club = args.club
+env_cfg.arms = args.arms
 env_cfg.scene.num_envs = args.num_envs
 env_cfg.sim.gravity = (0.0, 0.0, 0.0)
 
@@ -124,6 +133,7 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
     hand_target = torch.tensor([club.hand_x, 0.0, club.head_z + club.grip * math.cos(th)], device=dev)
     GRIP_Z = club.grip
     TARGET_DIR = torch.tensor([0.0, 1.0, 0.0], device=dev)   # right-hander hits to its left
+    SHAFT_DIR = torch.tensor([math.sin(th), 0.0, -math.cos(th)], device=dev)  # lead hand -> clubhead
 
     def quat_from_rotvec(v: torch.Tensor) -> torch.Tensor:
         """(x, y, z, w), the order isaac lab 3.0 writes and reads."""
@@ -188,8 +198,11 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
         cost += 8.0 * torch.relu(0.35 - (torso[:, 2] - pelvis[:, 2])) ** 2
         cost += 8.0 * torch.relu(1.00 - torso[:, 2]) ** 2
         cost += 8.0 * torch.relu(0.70 - pelvis[:, 2]) ** 2
-        # trail hand on the grip
-        cost += 2.0 * torch.sum((trail - lead) ** 2, dim=-1)
+        # trail hand on the grip: full arms can reach its real spot, just below the lead hand
+        if args.arms == "full":
+            cost += 20.0 * torch.sum((trail - lead - args.trail_on_shaft * SHAFT_DIR) ** 2, dim=-1)
+        else:
+            cost += 2.0 * torch.sum((trail - lead) ** 2, dim=-1)
         # face the ball
         for l_i, r_i, w in ((lsh_i, rsh_i, 2.0), (lhip_i, rhip_i, 4.0)):
             lat = p[:, l_i] - p[:, r_i]
@@ -240,7 +253,7 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
     print(f"hand->clubhead distance {torch.linalg.norm(d).item():.4f} m   (club grip length {GRIP_Z})")
     print(f"clubhead->ball {torch.linalg.norm(ball - clubhead).item():.4f} m   (face gap {args.ball_gap} m)")
     # full shift incl. x/y: score() recentred the feet on the origin
-    out = Path(args.out) if args.out else ADDRESS_DIR / f"{args.club}.json"
+    out = Path(args.out) if args.out else address_path(args.club, args.arms)
     out.parent.mkdir(exist_ok=True)
     out.write_text(json.dumps({
         "root_pos": [round(shift[0, 0].item(), 3), round(shift[0, 1].item(), 3), round(EVAL_Z + shift[0, 2].item(), 3)],
@@ -249,7 +262,7 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
         "ball_pos": [round(v, 3) for v in ball.tolist()],
         "weld_rot": [round(v, 5) for v in q.tolist()],
     }, indent=2) + "\n")
-    print(f"\nwrote {out}; now rebuild the asset: uv run python scripts/make_golfer_asset.py --club {args.club}")
+    print(f"\nwrote {out}; now rebuild the asset: uv run python scripts/make_golfer_asset.py --club {args.club} --arms {args.arms}")
     print("resulting pose (env-local, after dropping to the ground):")
     for l_i, r_i, label in ((lsh_i, rsh_i, "shoulder"), (lhip_i, rhip_i, "hip")):
         lat = p[0, l_i] - p[0, r_i]
