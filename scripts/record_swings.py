@@ -56,6 +56,7 @@ import envs.golf
 from envs.golf.golf_env_cfg import FLIGHT_KEYS, MPH, STRIKE_CLASSES, YD
 from envs.golf.golfer import CLUB_BODY
 from envs.golf.shapes import body_shapes
+from flight import ground as flight_ground
 from isaaclab.utils.math import quat_apply
 from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper, check_rsl_rl_version, create_rsl_rl_runner
 from isaaclab_rl.rsl_rl import handle_deprecated_rsl_rl_cfg
@@ -163,6 +164,7 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
         caned = torch.zeros(N, dtype=torch.bool, device=u.device)  # shaft on the ground after impact
         still = torch.zeros(N, 2, device=u.device)  # body speed summed over upright frames from still_after, frames
         flight = torch.zeros(N, len(FLIGHT_KEYS), device=u.device)  # flight/ per strike, FLIGHT_KEYS
+        launch_state = torch.zeros(N, 7, device=u.device)  # flight frame: launch velocity, spin, ball height
         ground = getattr(u, "ground", False)  # ball on the ground: strike class, leading edge [m], turf factor
         strike_cls = torch.zeros(N, dtype=torch.long, device=u.device)
         turf = torch.stack([torch.zeros(N, device=u.device), torch.ones(N, device=u.device)], -1)
@@ -208,6 +210,7 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
                     lead_moved = torch.where(alive, moved_now, lead_moved)
                 if hasattr(u, "flight_out"):
                     flight = torch.where(alive[:, None], u.flight_out, flight)
+                    launch_state = torch.where(alive[:, None], u.launch_state, launch_state)
                 if ground:
                     strike_cls = torch.where(alive, u.strike_class, strike_cls)
                     turf = torch.where(alive[:, None], torch.stack([u.leading_edge, u.turf_factor], -1), turf)
@@ -403,13 +406,28 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
                 f"curve {YD * summary['mean_curve']:+.1f} yd  apex {YD * summary['mean_apex']:.1f} yd  (+ = right)"
             )
             print(
+                f"    on the ground: total {YD * summary['mean_total']:.0f} yd  run {YD * summary['mean_run']:+.1f} yd  "
+                f"lands at {summary['mean_land_deg']:.0f} deg  comes to rest {YD * summary['mean_total_side']:+.1f} yd offline"
+            )
+            print(
                 f"    launch {summary['mean_launch_deg']:.1f} deg  spin {summary['mean_spin_rpm']:.0f} rpm, axis "
                 f"{summary['mean_axis_deg']:+.1f} deg  attack {summary['mean_attack_deg']:+.1f} deg  "
                 f"dynamic loft {summary['mean_dynamic_loft_deg']:.1f} deg  spin loft {summary['mean_spin_loft_deg']:.1f} deg"
             )
 
+        # every flown shot, for the viewer's chart [m, deg]; ftp picks its shape
+        shots = None
+        if flown.any():
+            shots = {k: [round(x, 2) for x in fl[k].tolist()]
+                     for k in ("carry", "side", "apex", "launch_deg", "land_deg", "total", "total_side", "run")}
+            shots["ftp"] = [round(x, 1) for x in (face_path[flown, 0] - face_path[flown, 1]).tolist()]
+
         episodes = []
         for i in picks:
+            path = []
+            if flown[i]:
+                state = launch_state[i].cpu().numpy()
+                path = flight_ground.trajectory(state[None, :3], state[None, 3:6], float(state[6]))[0].round(2).ravel().tolist()
             L = length[i].item()
             mm = (pts[i, :L] * 1000).round().clamp(-32767, 32767).to(torch.int16)
             episodes.append(
@@ -422,13 +440,15 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
                     "impactClub": impact[i, 0].item(), "impactHand": impact[i, 1].item(), "impactTime": impact[i, 2].item(),
                     "offline": offline[i].item(), "backswing": backswing[i].item(), "topTime": top_time[i].item(),
                     **({"carry": flight[i, 0].item(), "curve": flight[i, 2].item(), "side": flight[i, 1].item(),
-                        "spin": flight[i, 4].item(), "axis": flight[i, 5].item(), "launch": flight[i, 6].item()}
+                        "spin": flight[i, 4].item(), "axis": flight[i, 5].item(), "launch": flight[i, 6].item(),
+                        "total": flight[i, FLIGHT_KEYS.index("total")].item(), "run": flight[i, FLIGHT_KEYS.index("run")].item(),
+                        "ftp": (face_path[i, 0] - face_path[i, 1]).item(), "path": path}
                        if flown[i] else {}),
                     "pts": pack(mm), "sc": pack(sc[i, :L].float()),
                 }
             )
         out_ckpts.append({"name": ckpt.stem, "iter": iteration(ckpt), "path": str(ckpt),
-                          "summary": summary, "episodes": episodes})
+                          "summary": summary, "episodes": episodes, "shots": shots})
 
     data = {
         "meta": {

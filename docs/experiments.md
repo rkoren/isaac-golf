@@ -2523,3 +2523,186 @@ action std left at 0.13, so the unchanged continuation `i7fa5`/`i7fa6` is the co
   better than the control. The second stage at 6° holds the line but drifts like every lineage past ~500 fine-tune
   iterations (slices 21 → 33%, club −1.4 mph). **Best two-handed iron: `i7la1` model_3992** (on line, 21% slices);
   `i7ft1` model_3493 stays the fastest and best-balanced.
+- **Fat strikes (2026-11-23, `i7da` `turf_area` 0.0003, `i7db` `fat_sigma` 8 mm, from `i7la1` 3992, `land_sigma` 6 and
+  `thin_sigma` 5 mm kept):** two 500-iteration stages each, against the unchanged continuation `i7la2` 4491.
+  - *Why fat drifted:* on 512 swings of `i7la1` the leading edge meets the ball at +0.3 ± 4.1 mm, so most fat strikes
+    are 0–5 mm low and **66% of them cut no turf past `turf_grace`** (62% for `i7ft1`), which costs nothing at any
+    `turf_area`. The thin cost pushes the edge down and nothing pushes it back up: without a fat cost the pay's balance
+    point is ~3 mm below the ground (~77% fat; a rough Gaussian estimate that ignores the turf loss).
+  - *New knob (off by default):* `env.fat_sigma` [m] multiplies the ball pay by exp(−(e/σ)²), e how far the leading
+    edge is below the ground at impact: the mirror of `thin_sigma`, with a gradient on every low strike.
+  - *Results at a shared 0.0015 `turf_area`, 512 swings, seed 42, under the un-jittered address calibration below:*
+
+  | | `i7ft1` 3493 | `i7la1` 3992 (start) | control `i7la2` 4491 | `i7da1` 4491 | `i7da2` 4990 | `i7db1` 4491 | `i7db2` 4990 |
+  |---|---|---|---|---|---|---|---|
+  | good / fat / thin | 68/23/9% | 60/38/3% | 59/37/4% | 62/29/9% | 63/24/12% | 66/15/20% | **75/14/11%** |
+  | leading edge | +3 mm | +1 | +1 | +2 | +3 | +4 | +4 |
+  | ball, carry | 97.4 mph, 105 yd | 94.6, 105 | 93.6, 103 | 94.3, 104 | 92.9, 103 | **95.7, 107** | 92.3, 103 |
+  | carry p10 | 93 yd | 90 | 88 | 91 | 90 | 95 | 90 |
+  | slice / side | 57%, +4.8 yd | 19%, −0.9 | 26%, −0.4 | 23%, −0.4 | 32%, −0.3 | 20%, −2.0 | 27%, +0.1 |
+  | falls, tall finishes | 8%, 90% | 6%, 93% | 7%, 92% | 6%, 93% | 7%, 91% | 8%, 89% | 5%, 93% |
+
+  `fat_sigma` 8 mm does what it says in one stage (fat 37% → 15% against the control) but overshoots to thin: the
+  strike is centred at +4 mm, so `i7db1` is 15/20% (Corke 32/5). Against its own start it trades fat for thin: good
+  strikes 60 → 66%, ball +1 mph, carry +2 yd, slices unchanged, tall finishes 93 → 89% (also 94 → 90 on seed 7), and it
+  beats the unchanged control by ~2 mph and 4 yd. By `i7db2` the strike is the cleanest (75% good), balance about as
+  good as the start's, but the ball is 2 mph slower than it (3 mph behind `i7db1`). `turf_area` 0.0003 also works, more slowly (fat 38 → 24% at 4990), without the
+  overshoot and without the speed. **No clear winner:** `i7la1` 3992 is closest to Corke's mix, `i7db1` 4491 is the
+  longest, `i7db2` 4990 the cleanest; a `fat_sigma` near 12 mm should balance better. `i7ft1`'s 4% falls / 95% tall (old
+  calibration) reads 8% / 90% here: it was not the best balanced after all.
+  - *Address calibration bug, found and fixed (2026-11-24):* the first reset computed the trail hand's grip spot as the
+    **median over the jittered resets** of whichever envs were in the run (and the loft normal and head corners as the
+    mean of their jittered clubs). Every rollout size and seed therefore pulled the trail hand to a slightly different
+    spot: at 64 envs it was 1.1 cm sideways, which moved the same deterministic policy's strike 4 mm lower (64/32 envs: edge
+    −4.1/−5.2 mm, 88/91% fat; 128 or more: +0.1 mm, 44–46% fat). Pinning the 1,024-env grip spot at 64 envs brought the
+    strike back (−2.8 → +1.0 mm); loft and corners did nothing. `archive_run.py`'s 64-swing rows (and the 1-env films,
+    whose spot came from one jittered pose) were in that regime: 7 of 9 rows checked read 3–11 mph slow. Fixed: the
+    calibration (`_calibrate_address`) now reads the un-jittered address pose once, so it no longer depends on N or seed
+    (the spot is the same at 16 to 1,024 envs; `i7da2` at 64 swings now reads 27% fat, against 24% at 512). The exact spot
+    is ~2 mm from the old 1,024-env median, so old checkpoints read ~1 mm higher (`i7la1` fat 46 → 35% at 1,024 envs):
+    tables from before this date read ~1 mm lower strikes, i.e. ~10 points more fat, than the same checkpoints do now. `archive_run.py` now scores 256 swings.
+
+## Ball to rest, fairway, side view, and a driver and wedge on the full arms (2026-11-24)
+
+**Ground model (`flight/ground.py`, `scripts/fit_ground.py`, `flight/test_ground.py`).** Penner's tilted-plane bounce in 3D plus
+slip-to-roll and constant-deceleration roll, from `ball.fly`'s landing velocity and spin (now returned as `land_pos`, `land_vel`,
+`land_spin`). Penner's linear θc(v, φ) was rejected in a prototype before writing it: applied on every hop, a 26.6 m/s, 38° landing takes
+40 hops and always ends near 1.95 m/s (so the roll resistance has no effect), and a 40 m/s, 6° skull gets a 63° plane and pops up at
+11 m/s. θ0·(|v_z|/13.3)²·(φ/44.4) fades with the bounces: at most 9 bounces in 4,000 random landings, no energy gain. Fitted to the
+USGA/R&A 2021 line run = 79.1 − 1.6·θ [yd, deg], 32–45°: μ 0.40 (fixed), θ0 11.47°, e scale 0.889, ρ 0.765; worst error 1.1 yd. Tour rows
+run out from `ball.fly`: PGA driver 12.7 yd (41° landing), 3-wood 7.4, 7-iron 1.7, PW 0.0; LPGA driver 18.9 (Golf Monthly's PGA driver
+carry 282, total 300 implies ~18). Two tests were written with a wrong expectation and fixed, not loosened: none of the four first
+landings slipped (added a fast flat one), and a skull's "no pop-up" limit of 3 m/s was arbitrary (now: leaves slower than it arrived).
+Env smoke: `i7db1` 4491, 512 swings, seed 42, gives the same numbers to the digit before and after; it lands at 58° and runs −0.9 yd.
+
+**Fairway and side view.** Visual prims only, spawned in `_setup_scene` under `/World` when rendering (`env.fairway`). The Kit viewport is
+60° wide (measured from the posts: 11.1 px/m at 100 m); `archive_run.py --side` films from the +X side at (1.25·mean total + 14 m)/1.15
+away. `episode_length_s` stays 5 (it feeds the observation): the side clip uses `post_impact_steps=240`, `tracer_flight_s=3.8`.
+
+**Driver address (`driver_fa`).** The stock driver's hands sit at 0.72 m, so a straight arm stands it up (spine 24–32°). `solve_address.py`
+gained `--spine_deg` (a pelvis-to-head tilt cost, default off) and geometry overrides; shaft 48°, head 5.5 cm, spine target 42° gives a 36°
+spine on `check_address.py` (7-iron 39°), knees 25°, zero overlaps in 512 jittered envs. The wedge moved to the turf (`tee=False`, head
+centre 2.23 cm) and solves to the 7-iron's pose. Zero-shot, the 7-iron policy (`i7db1` 4491) on the wedge makes contact 100% of the time but
+tops or thins it (40% thin, 60% top, leading edge +22 mm: the club is 3 cm shorter); on the driver it contacts 15%.
+
+**Driver (`drfa`, two-handed, `ball_forward` 0.1), from scratch, gate after the full-swing stage: contact ≥ 80%, launch ≥ 5°, attack ≥ −3°,
+face-to-path within ±8°.**
+
+| | strike 599 | full 898 | full2 1197 (same) | carry + attack 1197 (from 898) | + `land_sigma` 8° 1496 |
+|---|---|---|---|---|---|
+| launch | 0.2° | 4.0° | −2.7° | 18.0° | **14.8°** |
+| attack | −5.5° | −4.5° | −6.5° | +3.2° | **+4.0°** |
+| dynamic loft | 1.2° | 5.4° | −2.0° | 20.5° | 16.7° |
+| face-to-path | +7.7° | +6.8° | +1.3° | +10.6° | **+5.6°** |
+| contact | 100% | 100% | 100% | 100% | 100% |
+| ball, smash | 66.3 mph, 1.12 | 76.5, 1.14 | 74.2, 1.06 | 82.3, 1.22 | 81.9 |
+| carry → total | 6 → 50 yd | 27 → 81 | 2 → 67 | 96 → 124 | 86 → 126 |
+| slices | 91% | 60% | 1% | 95% | 48% (43% fades) |
+| weight to lead foot at impact | — | 0.41 | 0.45 | 0.48 | 0.45 |
+
+- Three hundred more iterations of the same stage squared the face and delofted it (launch 4.0 → −2.7°): the "square or lofted, never both"
+  trade is still there on the full arms, and 898 had opened the face, not learned to loft it.
+- `attack_weight=150` + `attack_aim` and `carry_weight=2` + `carry_aim` with `aim_sigma=15`, from 898, 300 iterations: launch, attack and
+  carry jump. Without `aim_sigma` the `*_aim` factors are 1 and do nothing. The face stays open to the path.
+- `land_sigma=8` (landing angle off the line), 300 more: the slice halves, the shots land 3 yd right, launch stays. Gate passed.
+- Cane: from 898 the golfer plants the driver's head after impact on 99–100% of swings (`no_cane` sees it, via the head corners added to
+  `_update_cane`); without `fall_terminate` nothing punishes it. The stock-arm driver's scoop signature (weight 0.45, slow hands 8–9 mph)
+  is present before and after the launch pay, so it is not caused by it.
+- **Balance stages** from 1496 with the carry, attack and landing pay kept (`stand_weight=10 feet_slip_weight=10 hold_weight=20
+  balance_weight=100 shift_weight=20 fall_terminate`, std reset to 0.25; `fall_penalty=40` from the second stage):
+
+  | | gate 1496 | bal1 2095 | bal2 2594 | bal3 3093 | bal4 3592 |
+  |---|---|---|---|---|---|
+  | falls (256 swings) | 0% (propped) | 86% | 91% | 67% | **61%** |
+  | median fall after impact | — | 1.5 s | 2.0 | 1.8 | 1.7 |
+  | tall finishes | 100% (propped) | 11% | 2% | 23% | **37%** |
+  | leaning on the club | 100% | 77% | 52% | 35% | 26% |
+  | ball, carry → total | 81.9 mph, 86 → 126 yd | 94.3, 110 → 152 | 99.5, 123 → 162 | 100.8, 126 → 164 | **99.4, 122 → 161** |
+  | launch, attack | 14.8°, +4.0° | 13.7°, +2.5° | 14.1°, +2.6° | 14.0°, +2.6° | 13.5°, +1.8° |
+  | face-to-path | +5.6° | +4.9° | +5.0° | +5.0° | +4.9° |
+  | slice / fade | 48/43% | 21/76 | 23/73 | 18/78 | 18/79 |
+  | weight to lead foot at impact, finish | 0.45, 0.41 | 0.48, 0.16 | 0.48, 0.34 | 0.48, 0.30 | 0.47, 0.37 |
+
+  The gate conditions hold through every stage, the speed rises (smash 1.29 at 3592, 78 mph clubhead) and the balance is climbing, two
+  stages slower than the iron (which fell 21% at 2495). The weight stays back (0.47 at impact, balanced golfers ~0.7), which is why it
+  falls: the next terms to try are `impact_shift_weight` or more of the same. Film: `media/..._drfa_bal4` (with `side.mp4`).
+- **Two more stages (2026-11-25), 500 iterations each, 256 swings:** `drfa_bal5` (same recipe) and `drfa_bal6` (+ `impact_shift_weight=150`).
+
+  | | bal4 3592 | bal5 4091 | bal6 4590 |
+  |---|---|---|---|
+  | falls, tall finishes, leaning on the club | 61%, 37%, 26% | 55%, 42%, 24% | **47%, 52%, 21%** |
+  | ball, smash | 99.4 mph, 1.29 | 97.5, 1.27 | 96.1, 1.26 |
+  | carry → total | 122 → 161 yd | 121 → 158 | 118 → 155 |
+  | shaft strikes | 16 of 256 | 12 | 30 |
+  | launch, attack, face-to-path, slices | 13.5°, +1.8°, +4.9°, 18% | 14.0°, +1.6°, +5.1°, 24% | 14.3°, +2.3°, +4.9°, 17% |
+  | weight to lead foot at impact, finish | 0.47, 0.37 | 0.48, 0.37 | 0.50, 0.38 |
+
+  On 512 swings falls are 56% (bal4) and 48% (bal6). Each step is about 8 points, and training reward and episode length have been flat since bal5's second fifth: it is
+  still creeping, ~7 points per 500 iterations, and the strike gives up ~1.5 mph and the shaft hits double in the last stage. The
+  weight-forward pay did not move the weight (0.48 → 0.50, training `Reward/impact_shift` flat), so nothing shows the last step
+  came from it; there was no control. No lunge (the iron's failure at 150). Film: `media/..._drfa_bal6`.
+
+**Wedge (`pwfa`), fine-tuned from `i7db1` (std 0.25 at the start): plain balance recipe first, then thin/fat/land pay.**
+
+| | zero-shot | bal1 4990 | bal2 5489 (+ thin 5, fat 8, land 6) | bal3 5988 (std 0.12) | bal4 6487 |
+|---|---|---|---|---|---|
+| good / fat / thin / top | 0/0/40/60% | 8/5/75/12 | 27/32/41/0 | 40/35/25/0 | 36/30/32/1 |
+| leading edge | +22 mm | +13 | +2 | +2 | +2 |
+| ball, carry | 75.8 mph, 69 yd | 80.6, 65 | 83.6, 72 | 84.5, 74 | 81.8, 72 |
+| falls, tall finishes | 20%, — | 7%, 88% | 7%, 59% | 11%, 22% | 7%, 6% |
+| slices | 17% | 52% | 39% | 59% | 69% |
+
+The strike gets there but the finish sinks (finish torso 0.89 → 0.80 m). From 4990 with `posture_weight` 80 and `thin_sigma` 8 mm, 500
+iterations (`pwfa_c1`): good/fat/thin 34/39/27, heel 2.2 → 0.3 cm, edge +1 mm, falls 4%, ball 84.1 mph, 71 yd, but tall finishes still fell
+88 → 48%.
+
+**Correction (2026-11-25): it does not crouch to reach the shorter club.** That was inferred from finish heights; the recorded swings (medians
+over the 12 saved per run) say otherwise. At impact the body is as high as on the 7-iron (torso 1.04 m, lead hand 0.54 m) zero-shot, at 4990 and at 5489. The edge came down
+21 mm because the shaft is more upright along the target line (lean 26° → 18°, ~3 cm of head height at constant hands). The sink comes after:
+0.5 s after impact the torso is 0.93–0.95 m in every wedge and iron run, and then the weight drifts over the lead foot (0.77 → 0.94 at 5489) and the
+lead knee folds (84° → 104°; bal4 114°; 7-iron steady at 79–87°). The spine stays at 5–12°, so `posture_weight` (a spine angle) can't see it.
+The lead knee is not out of strength: mean effort 0.36–0.60, at full effort 1–7% of the time (`leg_limits.py` probe, 256 swings). The golfers
+stand on their joint stops: both ankles at the −50° limit (pushed at full effort 78–99% of the time on `pwfa_c1`, 15–39% on the iron), waist twist
+at −45°, trail hip at −45°. The driver differs (`drfa_bal4`, 5 saved swings that stay up): lead knee locked at 3° from impact on, weight 0.41–0.48,
+trail knee bending to 68°. "Tall" (torso ≥ 0.9 m) passes a squat: knees ~80–90° at the finish, against 28° at address (torso 1.11 m).
+**Lower address, tried and rejected:** `solve_address.py --club pw_low --spine_deg 57 --knee_deg 32` (trial key, removed) put the torso 2.2 cm lower, knees
+and spine +6°, zero overlaps. Untrained from it, against the normal wedge address (256 swings): impact torso 1.042–1.052 m (no change), edge +22 (from
++22), +18 (from +13), +6 (from +1) mm for the 7-iron policy, `bal1` and `c1`, falls 77/29/52% (from 20/7/4). Untrained falls are out of
+distribution, but the impact height and the edge show the address has no leverage. Not trained. Next to try: pay the height itself
+(`finish_low=0.8`), since the pay for height is what is loose.
+
+**Not adopted: one-length irons** (the user's call). The 7-iron policy swings a 7-iron-length set with only loft, smash and spin changed
+(loft 24–46°): 100% contact, 6% falls, carries 133/123/106/98/89/78 yd for 5-iron to PW, untrained. The bag gets real clubs instead:
+driver, fairway woods, a hybrid, irons with their own lengths, wedge, putter.
+
+## Why the driver is stalled (2026-11-25, diagnosis only: 256 swings per dump, `swing_dump.py` probe; nothing trained)
+
+The driver's clubhead (75–78 mph) is slower than the 7-iron's (80 mph) on a 16 cm longer club. MacKenzie's published average is a driver head speed of
+about 1.18 × the 7-iron's (about 94 mph here); a USGA recreational sample has smash 1.43 driver / 1.37 7-iron (ours 1.26 / ~1.21).
++10 mph of ball speed is ~20 yd of carry at `drfa_bal6`'s launch (96 mph ball: 121 yd; 115: 161; 135: 201).
+
+| at impact unless noted | 7-iron `i7db1` | driver `drfa_bal6` |
+|---|---|---|
+| lead hand height at the top | 0.96 m | 0.73 m |
+| shoulders behind hips, mid-downswing | 49° | 22° |
+| hand speed | 16 mph | 8 mph |
+| club angular speed | 43 rad/s | 37 rad/s |
+| downswing muscle work (positive, all joints) | 265 J (legs 140) | 212 J (legs 101) |
+| weight toward the lead foot | 0.71 | 0.50 |
+| lead / trail sole on the ground | 98% / 0% | 62% / 100% |
+| 0.1 s later: lead / trail sole, CoM speed toward target | 100% / 100%, −0.01 m/s | 0% / 65%, +0.68 m/s |
+
+It hits off the back foot, the lead foot leaves the ground, and it springs up and toward the target: the jump is in the strike, so balance pay has nothing to
+climb (the same shape as `cfresh`'s dive). It reaches 1.74 m of backswing without turning the shoulders or raising the hands (`backswing_cap`
+1.8 m is not the limit).
+
+By stage: the strike checkpoint (599) has the coil (hips against shoulders 45°) and the lead foot down; **the jump appears in the full-swing stage, 599 → 898**
+(separation 45° → 16°, lead sole 100% → 75% at impact and 0% 0.1 s later, CoM up +0.44 m/s), before any carry, attack or landing pay, and
+survives every later stage. The iron's full stage (`i7fa_full`, same recipe) is already at 0.93 m hands, 15 mph hand speed.
+
+Zero-shot iron policies on `driver_fa` (128 swings): contact 2–5% for `i7fa1–3`, 15% for `i7db1` at ball 0.0 (8% at 0.1), **club 74–76 mph, closest approach
+8.1–8.4 cm** (contact needs 7.0), backswing 2.0–2.1 m: the swing is intact and misses by about a centimetre.
+
+Smash falloff, checked against GOLF.com robot tests (carry loss, no ball speed, offset not given in inches: three-quarter toe or heel ~5 yd of carry, high 1–4,
+low 10–15): our model (`smash_sigma_toe` 2.2 cm, `smash_sigma_high` 1.1 cm, floor 1.0) loses 17% of ball speed at 1.9 cm, several times steeper, so
+the driver's ordinary 1.1 cm / 0.6 cm miss costs 14% (smash 1.26). Not changed: it would re-baseline every club.

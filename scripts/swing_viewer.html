@@ -55,6 +55,11 @@
   #view { flex: 1; min-height: 0; position: relative; }
   #view canvas { position: absolute; inset: 0; width: 100%; height: 100%; cursor: grab; touch-action: none; }
   #view canvas:active { cursor: grabbing; }
+  #view canvas#shots { cursor: crosshair; }
+  #tip { position: absolute; pointer-events: none; background: rgba(17, 20, 24, .92); border: 1px solid var(--edge);
+    border-radius: 8px; padding: 7px 10px; font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  #tip b { display: block; font-size: 13px; }
+  #tip span { color: var(--muted); display: block; }
   #hud { position: absolute; top: 10px; left: 12px; background: rgba(17, 20, 24, .74); padding: 8px 10px;
     border-radius: 8px; font-variant-numeric: tabular-nums; pointer-events: none; min-width: 190px; }
   #hud .row { display: flex; justify-content: space-between; gap: 14px; }
@@ -85,7 +90,7 @@
     <div><div class="label">Episodes, most paid to least</div><div class="eps" id="eps"></div></div>
   </aside>
   <main>
-    <div id="view"><canvas id="scene"></canvas><div id="hud"></div></div>
+    <div id="view"><canvas id="scene"></canvas><canvas id="shots" hidden></canvas><div id="hud"></div><div id="tip" hidden></div></div>
     <div id="bar">
       <div class="grp">
         <button id="b-start" title="First frame (Home)">&#x23EE;</button>
@@ -102,6 +107,7 @@
         <button data-view="face" title="Face-on: in front of the golfer's chest (1)">Face-on</button>
         <button data-view="dtl" title="Down the line (2)">Down the line</button>
         <button data-view="top" title="Overhead (3)">Overhead</button>
+        <button id="b-shots" title="Shot chart: side-on and from above (S)">Shots</button>
       </div>
       <div class="sep"></div>
       <div class="grp">
@@ -465,6 +471,97 @@ function drawChart() {
   cg.textAlign = "right"; cg.fillText(`${((ep.frames - 1) * M.dt).toFixed(2)} s`, Wc - CH.r * d, Hc - 4 * d);
 }
 
+// ---------- shot chart: every shot of the checkpoint ----------
+const shotsCv = $("shots"), sg = shotsCv.getContext("2d"), tip = $("tip");
+// polarity of the curve: blue left, red right, gray straight (face-to-path bands, same as the swing stats)
+const SHAPES = [["hook", "#3987e5"], ["draw", "#8fbaf0"], ["straight", "#b9c0ca"], ["fade", "#f0a3a2"], ["slice", "#e66767"]];
+const shapeIdx = f => f < -6 ? 0 : f < -2 ? 1 : f <= 2 ? 2 : f <= 6 ? 3 : 4;
+const ydn = m => m * YD, fairHalf = ydn(15);  // fairway half-width [yd]
+let shotHits = [], shotHover = -1;
+
+function drawShots() {
+  const Wc = shotsCv.width, Hc = shotsCv.height, d = dpr, ck = DATA.checkpoints[st.ck], S = ck.shots;
+  sg.clearRect(0, 0, Wc, Hc); sg.fillStyle = "#14181d"; sg.fillRect(0, 0, Wc, Hc);
+  sg.font = `${11 * d}px system-ui, sans-serif`; sg.textBaseline = "alphabetic";
+  if (!S) { sg.fillStyle = "#8b95a3"; sg.textAlign = "left"; sg.fillText("No flown shots recorded in this file (older viewer data).", 20 * d, 30 * d); return; }
+  const n = S.total.length, pad = { l: 46 * d, r: 20 * d }, w = Wc - pad.l - pad.r;
+  const step = 50, maxX = Math.ceil(Math.max(...S.total.map(ydn), ...S.carry.map(ydn), 50) / step) * step;
+  const sc = w / maxX, px = x => pad.l + x * sc;
+  const grid = (y0, y1, label) => {
+    sg.strokeStyle = "#252c35"; sg.lineWidth = d; sg.fillStyle = "#8b95a3"; sg.textAlign = "center";
+    for (let x = 0; x <= maxX; x += step) { sg.beginPath(); sg.moveTo(px(x), y0); sg.lineTo(px(x), y1); sg.stroke(); if (label) sg.fillText(`${x} yd`, px(x), y1 + 13 * d); }
+  };
+  // side-on: the saved episodes' paths, height against distance, one scale
+  const top = 34 * d, hTop = Math.round(Hc * 0.40) - top;
+  const y0 = top + hTop;
+  grid(top, y0, true);
+  sg.strokeStyle = "#4b5668"; sg.beginPath(); sg.moveTo(pad.l, y0); sg.lineTo(pad.l + w, y0); sg.stroke();
+  sg.fillStyle = "#e6e9ee"; sg.textAlign = "left"; sg.fillText("Side-on: the saved shots, launch to rest (bold = selected episode)", pad.l, 18 * d);
+  const maxZ = Math.max(...ck.episodes.filter(e => e.path && e.path.length).flatMap(e => { const z = []; for (let i = 2; i < e.path.length; i += 3) z.push(ydn(e.path[i])); return z; }), 10);
+  const sc2 = Math.min(sc, (hTop - 12 * d) / maxZ);
+  for (const [k, e] of ck.episodes.map((e, i) => [i, e]).sort((a, b) => (a[0] === st.ep) - (b[0] === st.ep))) {
+    if (!e.path || !e.path.length) continue;
+    const bold = k === st.ep, color = SHAPES[shapeIdx(e.ftp)][1];
+    const P = e.path;
+    sg.beginPath();
+    for (let i = 0; i < P.length; i += 3) sg.lineTo(px(ydn(P[i + 1])), y0 - ydn(Math.max(P[i + 2], 0)) * sc2);
+    sg.globalAlpha = bold ? 1 : 0.5; sg.lineJoin = "round"; sg.lineWidth = (bold ? 2.6 : 1.3) * d; sg.strokeStyle = color; sg.stroke(); sg.globalAlpha = 1;
+  }
+  // from above: every shot, side against distance; landing spot (ring), rest (dot)
+  const top2 = y0 + 46 * d, h2 = Hc - top2 - 22 * d, mid = top2 + h2 / 2;
+  const maxS = Math.max(12, ...S.total_side.map(x => Math.abs(ydn(x))), ...S.side.map(x => Math.abs(ydn(x))));
+  const sc3 = Math.min(sc, h2 / 2 / Math.max(maxS * 1.15, fairHalf * 1.2)), py = s => mid + s * sc3;
+  sg.fillStyle = "#1b3519"; sg.fillRect(pad.l, py(-fairHalf), w, 2 * fairHalf * sc3);
+  sg.save(); sg.beginPath(); sg.rect(pad.l, top2, w, h2); sg.clip();
+  grid(top2, top2 + h2, false); sg.restore();
+  sg.fillStyle = "#8b95a3"; sg.textAlign = "right"; sg.fillText("right", pad.l - 6 * d, py(fairHalf) + 3 * d); sg.fillText("left", pad.l - 6 * d, py(-fairHalf) + 3 * d);
+  sg.fillStyle = "#e6e9ee"; sg.textAlign = "left";
+  sg.fillText(`From above: all ${n} shots, dot = rest, ring = landing (fairway ${Math.round(2 * fairHalf)} yd wide)`, pad.l, top2 - 10 * d);
+  shotHits = [];
+  for (let i = 0; i < n; i++) {
+    const c = SHAPES[shapeIdx(S.ftp[i])][1], xC = px(ydn(Math.sqrt(Math.max(S.carry[i] ** 2 - S.side[i] ** 2, 0)))), yC = py(ydn(S.side[i]));
+    const fwd = Math.sqrt(Math.max(S.total[i] ** 2 - S.total_side[i] ** 2, 0)) * Math.sign(S.total[i] || 1);
+    const xT = px(ydn(fwd)), yT = py(ydn(S.total_side[i]));
+    shotHits.push([xT, yT, i, xC, yC]);
+    const hot = i === shotHover;
+    sg.strokeStyle = c; sg.globalAlpha = hot ? 0.9 : 0.35; sg.lineWidth = d;
+    if (hot) { sg.beginPath(); sg.moveTo(xC, yC); sg.lineTo(xT, yT); sg.stroke(); }
+    sg.beginPath(); sg.arc(xC, yC, (hot ? 4 : 2.4) * d, 0, 7); sg.stroke();
+    sg.globalAlpha = 0.9; sg.fillStyle = c; sg.beginPath(); sg.arc(xT, yT, (hot ? 6 : 3.6) * d, 0, 7); sg.fill();
+    sg.strokeStyle = "#14181d"; sg.lineWidth = d; sg.globalAlpha = 1; sg.beginPath(); sg.arc(xT, yT, (hot ? 6 : 3.6) * d, 0, 7); sg.stroke();
+  }
+  // legend with counts
+  let lx = Wc - pad.r; sg.textAlign = "right"; sg.textBaseline = "middle";
+  for (let k = SHAPES.length - 1; k >= 0; k--) {
+    const cnt = S.ftp.filter(f => shapeIdx(f) === k).length, txt = `${SHAPES[k][0]} ${Math.round(100 * cnt / n)}%`;
+    sg.fillStyle = "#c9ced6"; sg.fillText(txt, lx, 14 * d); lx -= sg.measureText(txt).width + 5 * d;
+    sg.fillStyle = SHAPES[k][1]; sg.beginPath(); sg.arc(lx - 5 * d, 14 * d, 4.5 * d, 0, 7); sg.fill(); lx -= 20 * d;
+  }
+  sg.textBaseline = "alphabetic";
+}
+shotsCv.addEventListener("pointermove", e => {
+  const r = shotsCv.getBoundingClientRect(), x = (e.clientX - r.left) * dpr, y = (e.clientY - r.top) * dpr;
+  let best = -1, bd = (24 * dpr) ** 2;
+  for (const [hx, hy, i] of shotHits) { const q = (hx - x) ** 2 + (hy - y) ** 2; if (q < bd) { bd = q; best = i; } }
+  shotHover = best;
+  if (best < 0) { tip.hidden = true; return; }
+  const S = DATA.checkpoints[st.ck].shots, i = best, yv = v => `${ydn(v).toFixed(0)} yd`;
+  tip.replaceChildren();
+  const add = (tag, txt) => { const el = document.createElement(tag); el.textContent = txt; tip.appendChild(el); };
+  add("b", `${yv(S.total[i])} total, ${SHAPES[shapeIdx(S.ftp[i])][0]}`);
+  add("span", `carry ${yv(S.carry[i])}, run ${S.run[i] >= 0 ? "+" : ""}${ydn(S.run[i]).toFixed(1)} yd, apex ${yv(S.apex[i])}`);
+  add("span", `rests ${Math.abs(ydn(S.total_side[i])).toFixed(0)} yd ${S.total_side[i] >= 0 ? "right" : "left"}; lands at ${S.land_deg[i].toFixed(0)}°, launch ${S.launch_deg[i].toFixed(0)}°`);
+  tip.hidden = false;
+  tip.style.left = `${Math.min(e.clientX - r.left + 14, r.width - 260)}px`; tip.style.top = `${Math.max(e.clientY - r.top - 66, 4)}px`;
+});
+shotsCv.addEventListener("pointerleave", () => { shotHover = -1; tip.hidden = true; });
+function setShots(on) {
+  st.shots = on; shotsCv.hidden = !on; scene.hidden = on; $("hud").hidden = on; tip.hidden = true;
+  $("b-shots").classList.toggle("on", on);
+  document.querySelectorAll("#views [data-view]").forEach(b => b.classList.toggle("on", !on && b.dataset.view === st.view));
+  resize();
+}
+
 // ---------- sidebar ----------
 const pct = x => `${Math.round(x * 100)}%`;
 function renderSidebar() {
@@ -483,6 +580,7 @@ function renderSidebar() {
       ["Carry, mean (10th pct)", `${yd(s.mean_carry)} (${yd(s.carry_p10)})`],
       ["Lands, mean", `${side(s.mean_side)} (|${(s.side_abs * YD).toFixed(1)}| yd)`],
       ["Curve, mean", side(s.mean_curve)],
+      ...(s.mean_total !== undefined ? [["Total, run on the fairway", `${yd(s.mean_total)} (${(s.mean_run * YD).toFixed(1)} yd of run)`]] : []),
       ["Launch, spin", `${s.mean_launch_deg.toFixed(1)}&deg;, ${s.mean_spin_rpm.toFixed(0)} rpm, axis ${off(s.mean_axis_deg)}`],
     ] : []),
     ["Ball speed, mean max", mph(s.mean_max_ball_speed)],
@@ -536,7 +634,8 @@ function step(n) { setPlaying(false); st.t = Math.max(0, Math.min(cur().frames -
 
 $("tabs").addEventListener("click", e => { const b = e.target.closest("[data-ck]"); if (b) select(+b.dataset.ck, st.ep); });
 $("eps").addEventListener("click", e => { const r = e.target.closest("[data-ep]"); if (r) { select(st.ck, +r.dataset.ep); setPlaying(true); } });
-$("views").addEventListener("click", e => { const b = e.target.closest("[data-view]"); if (b) setView(b.dataset.view); });
+$("views").addEventListener("click", e => { const b = e.target.closest("[data-view]"); if (b) { setShots(false); setView(b.dataset.view); } });
+$("b-shots").onclick = () => setShots(!st.shots);
 $("b-play").onclick = () => { if (!st.playing && st.t >= cur().frames - 1) st.t = 0; setPlaying(!st.playing); };
 $("b-back").onclick = () => step(-1);
 $("b-fwd").onclick = () => step(1);
@@ -580,6 +679,7 @@ window.addEventListener("keydown", e => {
   else if (k === "1") setView("face");
   else if (k === "2") setView("dtl");
   else if (k === "3") setView("top");
+  else if (k === "s" || k === "S") $("b-shots").click();
   else if (k === "t" || k === "T") $("t-trail").click();
   else if (k === "g" || k === "G") $("t-ghost").click();
   else if (k === "[" || k === "]") {
@@ -591,7 +691,7 @@ window.addEventListener("keydown", e => {
 // ---------- loop ----------
 function resize() {
   dpr = window.devicePixelRatio || 1;
-  for (const c of [scene, chart]) { c.width = Math.max(1, c.clientWidth * dpr); c.height = Math.max(1, c.clientHeight * dpr); }
+  for (const c of [scene, chart, shotsCv]) { c.width = Math.max(1, c.clientWidth * dpr); c.height = Math.max(1, c.clientHeight * dpr); }
   W = scene.width; H = scene.height;
 }
 new ResizeObserver(resize).observe($("view"));
@@ -610,7 +710,7 @@ function frame(now) {
       while (st.acc >= M.dt && st.t < ep.frames - 1) { st.t++; st.acc -= M.dt; }
     }
   }
-  drawScene();
+  if (st.shots) drawShots(); else drawScene();
   drawChart();
   requestAnimationFrame(frame);
 }

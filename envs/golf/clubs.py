@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 ADDRESS_DIR = Path(__file__).with_name("address")
@@ -29,10 +29,11 @@ class Club:
 CLUBS = {
     "driver": Club(0.85, 42.0, 0.089, 0.25, 0.40, (0.04, 0.10, 0.05), 0.31, 10.5, 1.47, "driver", True, "Driver"),
     "7iron": Club(0.69, 34.0, 0.0213, 0.24, 0.34, (0.02, 0.065, 0.04), 0.40, 34.0, 1.33, "iron", False, "7 Iron"),
-    "pw": Club(0.66, 32.0, 0.025, 0.23, 0.30, (0.02, 0.065, 0.042), 0.42, 46.0, 1.24, "iron", True, "PW"),
+    "pw": Club(0.66, 32.0, 0.0223, 0.23, 0.30, (0.02, 0.065, 0.042), 0.42, 46.0, 1.24, "iron", False, "PW"),
 }
 CLUBS["7iron_arm"] = CLUBS["7iron"]  # trial: the 7-iron addressed with a straight lead arm
 CLUBS["driver_arm"] = CLUBS["driver"]  # trial: the driver addressed the same way
+CLUBS["driver_fa"] = replace(CLUBS["driver"], shaft_deg=48.0, head_z=0.055)
 
 
 WRIST = "lead_wrist" 

@@ -49,7 +49,8 @@ def fly(vel, spin, z0=0.0, dt=0.2, t_max=15.0, rho=RHO, path=False):
     """Fly each ball from height z0 above the ground (x = y = 0) until it lands (z = 0).
 
     Returns carry (horizontal distance), side (+ right of the y axis), curve (+ right of the start line),
-    apex, flight time, landing angle, all [m]/[s]/[deg]; path=True adds positions every step.
+    apex, flight time, landing angle, all [m]/[s]/[deg], and the landing state (land_pos, land_vel, land_spin);
+    path=True adds positions every step.
     """
     n = len(vel)
     p, v = np.zeros((n, 3)), np.array(vel, dtype=float)
@@ -93,6 +94,9 @@ def fly(vel, spin, z0=0.0, dt=0.2, t_max=15.0, rho=RHO, path=False):
         "apex": apex,
         "time": land_t,
         "land_deg": np.degrees(np.arctan2(-land_v[:, 2], np.linalg.norm(land_v[:, :2], axis=-1))),
+        "land_pos": land_p,
+        "land_vel": land_v,
+        "land_spin": w_hat * w0 * np.exp(-land_t / SPIN_TAU)[:, None],
     }
     if path:
         out["path"] = np.stack(track, 1)

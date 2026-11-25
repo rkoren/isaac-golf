@@ -6,13 +6,14 @@ Several run dirs (a chain, each resumed from the one before) film as one progres
 from __future__ import annotations
 
 import argparse
-import json
 import re
 import shutil
 import subprocess
 import sys
 import time
 from pathlib import Path
+
+from replay import replay_overrides, viewer_data
 
 REPO = Path(__file__).resolve().parents[1]
 MEDIA = REPO / "media"
@@ -28,6 +29,7 @@ ap.add_argument("--max_ckpts", type=int, default=4, help="checkpoints to film, s
 ap.add_argument("--iters", type=int, nargs="+", help="film exactly these iterations (overrides --max_ckpts)")
 ap.add_argument("--video_length", type=int, default=300, help="env steps per clip (60 per second)")
 ap.add_argument("--existing", action="store_true", help="copy clips/viewer already in the run dir")
+ap.add_argument("--side", action="store_true", help="also film the last checkpoint from the side, the whole shot in frame (side.mp4)")
 args = ap.parse_args()
 
 runs = [Path(r).resolve() for r in args.run]
@@ -44,25 +46,6 @@ else:
 
 out = MEDIA / f"{time.strftime('%Y-%m-%d')}_{args.stage}_{run.name}"
 out.mkdir(parents=True, exist_ok=True)
-REPLAY = ("club", "wrist", "muscle", "muscle_k", "damping_scale", "leg_damping_scale", "impact_arm_dist",
-          "max_depenetration_velocity", "motor_noise", "motor_noise_tau", "ball_forward", "wrist_gear", "flight_obs",
-          "turf_area", "ankle_gear", "grip_spring", "grip_damping", "grip_max_force", "gravity_obs", "ball_ref_obs",
-          "arms")
-
-
-def replay_overrides(r: Path) -> list[str]:
-    """the run's club and body from its env.yaml (reward-only settings don't change the swing)"""
-    env_yaml = (r / "params" / "env.yaml").read_text(encoding="utf-8") if (r / "params" / "env.yaml").exists() else ""
-    ov = [f"env.{k}={m.group(1)}" for k in REPLAY if (m := re.search(rf"^{k}: (\S+)", env_yaml, re.M))]
-    # runs before the knob only have the robot's nested value
-    if not any("max_depenetration_velocity" in o for o in ov) and (
-        m := re.search(r"^\s+max_depenetration_velocity: ([\d.]+)", env_yaml, re.M)
-    ):
-        ov.append(f"env.max_depenetration_velocity={m.group(1)}")
-    print(f"[archive] replay overrides for {r.name}: {ov}")
-    return ov
-
-
 def sh(cmd: list[str]) -> None:
     print("[archive] " + " ".join(cmd))
     subprocess.run(cmd, cwd=REPO, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -99,14 +82,12 @@ if clips:
                     "-c:v", "libx264", "-pix_fmt", "yuv420p", str(out / "progression.mp4")], check=True)
 
 if not args.existing:
-    sh(UV + ["python", "scripts/record_swings.py", str(run), "physics=isaacsim_physx", *replay_overrides(run)])
+    sh(UV + ["python", "scripts/record_swings.py", str(run), "--num_envs", "256", "physics=isaacsim_physx", *replay_overrides(run)])
 viewers = sorted((run / "swings").glob("*.html"), key=lambda p: p.stat().st_mtime)
 summary = ""
 if viewers:
     shutil.copy2(viewers[-1], out / "swings.html")
-    html = viewers[-1].read_text(encoding="utf-8")
-    blob = re.search(r'id="swing-data" type="application/json">(.*?)</script>', html, re.S).group(1)
-    last = json.loads(blob.replace("<\\/", "</"))["checkpoints"][-1]
+    last = viewer_data(viewers[-1])["checkpoints"][-1]
     s = last["summary"]
     club = s.get("clubhead_strike_rate")
     summary = (f"{last['name']}: contact {s['contact_rate']:.0%}"
@@ -127,6 +108,24 @@ if not index.exists():
     index.write_text("# Swing archive\n\nOne row per archived run. Open `swings.html` in a browser.\n\n"
                      "| date | stage | run | note | last checkpoint | files |\n|---|---|---|---|---|---|\n",
                      encoding="utf-8")
+if args.side and not args.existing and "mean_total" in (s if viewers else {}):
+    # +X side: the ball crosses the frame left to right; the frame is ~1.15 x the distance wide (60 deg, see docs)
+    total, apex = s["mean_total"], s["mean_apex"]
+    width = 1.25 * total + 14.0
+    dist, mid, cz = width / 1.15, total / 2, max(apex * 0.45, 4.0)
+    play = run / "videos" / "play"
+    before = set(play.glob("clip_*.mp4"))
+    sh(UV + ["isaaclab", "play", "--rl_library", "rsl_rl", "--task", "Isaac-Golf-Swing-Direct", "--num_envs", "1",
+             "--checkpoint", str(ckpts[-1]), "--video", "--video_length", "300", "physics=isaacsim_physx",
+             *replay_overrides(ckpts[-1].parent), f"env.sim.default_visualizer_cfg.eye=({dist:.1f},{mid:.1f},{cz:.1f})",
+             f"env.sim.default_visualizer_cfg.lookat=(0.0,{mid:.1f},{cz:.1f})", "env.post_impact_steps=240", "env.tracer_flight_s=3.8"])
+    fresh = sorted(set(play.glob("clip_*.mp4")) - before)
+    if fresh:
+        shutil.move(str(fresh[-1]), out / "side.mp4")  # out of play/, which the progression's glob would pick up
+        print(f"[archive] side view at {dist:.0f} m, {width:.0f} m wide")
+    else:
+        print("[archive] no side clip")
+
 rel = out.relative_to(MEDIA).as_posix()
 files = " ".join(f"[{p.name}]({rel}/{p.name})" for p in sorted(out.iterdir()))
 with index.open("a", encoding="utf-8") as f:

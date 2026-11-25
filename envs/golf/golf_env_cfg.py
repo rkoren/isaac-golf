@@ -29,8 +29,10 @@ BALL_MASS = 0.0459
 MPH = 2.23694  # m/s -> mph, for reporting only
 YD = 1.09361   # m -> yards, for reporting only
 # flight/ per strike: distances [m] (side and curve + = right), spin [rpm], angles [deg] (axis + = curves right)
-FLIGHT_KEYS = ("carry", "side", "curve", "apex", "spin_rpm", "axis_deg", "launch_deg", "attack_deg",
-               "dynamic_loft_deg", "spin_loft_deg")
+FLIGHT_DISTANCE = ("carry", "side", "curve", "apex")
+FLIGHT_LAUNCH = ("spin_rpm", "axis_deg", "launch_deg", "attack_deg", "dynamic_loft_deg", "spin_loft_deg")
+FLIGHT_GROUND = ("land_deg", "total", "total_side", "run")  # after bounce and roll; run + = forward past the landing spot
+FLIGHT_KEYS = FLIGHT_DISTANCE + FLIGHT_LAUNCH + FLIGHT_GROUND
 # ball on the ground: strike by leading-edge height at impact (Corke et al. 2021), Metrics/<class>_rate
 STRIKE_CLASSES = ("good", "fat", "thin", "top")
 
@@ -44,6 +46,9 @@ MUSCLE_VMAX = {
 }
 
 GRASS = (0.30, 0.62, 0.22)
+FAIRWAY_GRASS, ROUGH = (0.17, 0.37, 0.11), (0.05, 0.15, 0.04)  # darker than GRASS: the dome light washes bare slabs out
+FAIRWAY_HALF = 15.0  # [m]
+POST_YD = (50, 100, 150, 200, 250, 300)  # yardage posts down the target line
 BALL_COLOR = (1.0, 0.1, 0.65)
 BALL_GLOW = (1.6, 0.1, 1.0)
 
@@ -148,6 +153,7 @@ class GolfEnvCfg(DirectRLEnvCfg):
     ball_pos: tuple[float, float, float] = BALL_POS
     ball_forward: float = 0.0           # [m] ball moved toward the target from the solved address spot
     tracer: bool = True                 # shot tracer on env 0 when rendering (GUI or --video); nothing headless
+    fairway: bool = True                # rough strips and yardage posts when rendering; nothing headless
     tracer_flight_s: float = 2.0        # [s] the tracer plays each computed flight back over this long
     # aim based on golfer (left for a righty)
     target_dir: tuple[float, float, float] = (0.0, 1.0, 0.0)

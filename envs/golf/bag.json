@@ -1,0 +1,53 @@
+{
+ "7iron": {
+  "carry": 97.61,
+  "carry_sd": 8.82,
+  "total": 96.78,
+  "total_sd": 8.65,
+  "side": -1.5,
+  "side_sd": 5.9,
+  "run": -0.83,
+  "apex": 35.68,
+  "land_deg": 57.9,
+  "ball_speed": 42.79,
+  "fell_rate": 0.084,
+  "contact_rate": 1.0,
+  "swings": 512,
+  "checkpoint": "logs/rsl_rl/golf_swing/2026-11-23_00-41-39_i7db1/model_4491.pt",
+  "measured": "2026-11-24"
+ },
+ "driver": {
+  "carry": 109.38,
+  "carry_sd": 23.83,
+  "total": 142.52,
+  "total_sd": 20.43,
+  "side": 7.45,
+  "side_sd": 6.46,
+  "run": 33.2,
+  "apex": 10.7,
+  "land_deg": 26.0,
+  "ball_speed": 43.1,
+  "fell_rate": 0.475,
+  "contact_rate": 1.0,
+  "swings": 512,
+  "checkpoint": "logs/rsl_rl/golf_swing/2026-11-25_01-54-37_drfa_bal6/model_4590.pt",
+  "measured": "2026-11-25"
+ },
+ "pw": {
+  "carry": 65.11,
+  "carry_sd": 8.35,
+  "total": 62.99,
+  "total_sd": 8.13,
+  "side": 2.41,
+  "side_sd": 3.91,
+  "run": -2.14,
+  "apex": 34.72,
+  "land_deg": 64.6,
+  "ball_speed": 37.71,
+  "fell_rate": 0.045,
+  "contact_rate": 1.0,
+  "swings": 512,
+  "checkpoint": "logs/rsl_rl/golf_swing/2026-11-24_18-39-46_pwfa_c1/model_5489.pt",
+  "measured": "2026-11-24"
+ }
+}

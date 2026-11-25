@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import dataclasses
 import json
 import math
 import sys
@@ -34,6 +35,10 @@ ap.add_argument("--knee_deg", type=float, default=25.0, help="knee flex at addre
 ap.add_argument("--lead_elbow_deg", type=float, default=-1.0, help="lead elbow bend at address; below 0 free")
 ap.add_argument("--arms", default="stock", choices=("stock", "full"), help="body: full = twisting shoulders, wrists")
 ap.add_argument("--trail_on_shaft", type=float, default=0.085, help="full arms: trail hand this far down the grip [m]")
+ap.add_argument("--spine_deg", type=float, default=-1.0, help="spine tilt off vertical (pelvis to head) at address; below 0 free")
+ap.add_argument("--shaft_deg", type=float, default=None, help="override the club's shaft angle, to try geometry before clubs.py")
+ap.add_argument("--head_z", type=float, default=None, help="override the club's head height at address")
+ap.add_argument("--hand_x", type=float, default=None, help="override the club's lead hand in front of the ankles")
 ap.add_argument("--out", default=None, help="address json path (default envs/golf/address/<club>[_full].json)")
 add_launcher_args(ap)
 args, extra = ap.parse_known_args()
@@ -81,7 +86,8 @@ if args.arms == "full":
                ("right_wrist:1", -0.8, 0.8), ("right_wrist:2", -0.8, 0.8)]
  
 EVAL_Z = 5.0
-club = CLUBS[args.club]
+club = dataclasses.replace(
+    CLUBS[args.club], **{k: getattr(args, k) for k in ("shaft_deg", "head_z", "hand_x") if getattr(args, k) is not None})
 GOLFER_USD = golfer_usd(args.club, arms=args.arms)
 
 env_cfg, _ = resolve_task_config(args.task, "")
@@ -191,6 +197,10 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
             bend = torch.arccos(torch.nn.functional.cosine_similarity(
                 p[:, lla_i] - p[:, lua_i], lead - p[:, lla_i], dim=-1).clamp(-1.0, 1.0))
             cost += 8.0 * (bend - math.radians(args.lead_elbow_deg)) ** 2
+        if args.spine_deg >= 0:
+            s = p[:, head_i] - p[:, pelvis_i]
+            tilt = torch.arccos((s[:, 2] / torch.linalg.norm(s, dim=-1)).clamp(-1.0, 1.0))
+            cost += 8.0 * (tilt - math.radians(args.spine_deg)) ** 2
         com = (p * mass.view(1, -1, 1)).sum(1) / mass.sum()
         support = torch.cat([fl, fr], 1)[..., :2].mean(1)
         cost += 20.0 * torch.sum((com[:, :2] - support) ** 2, dim=-1)
@@ -276,4 +286,6 @@ with launch_simulation(env_cfg, args), contextlib.ExitStack() as cleanup:
     sh, el = p[0, lua_i], p[0, lla_i]
     bend = torch.arccos(torch.nn.functional.cosine_similarity(el - sh, lead - el, dim=0).clamp(-1.0, 1.0))
     print(f"  lead elbow bend {math.degrees(bend.item()):.1f} deg")
+    s = p[0, head_i] - p[0, pelvis_i]
+    print(f"  spine tilt {math.degrees(torch.arccos((s[2] / torch.linalg.norm(s)).clamp(-1.0, 1.0)).item()):.0f} deg  ball {ball.tolist()}")
     print(f"  lowest body z {p[0, :, 2].min().item():+.3f}   torso-pelvis {(p[0, torso_i, 2] - p[0, pelvis_i, 2]).item():+.3f} m")

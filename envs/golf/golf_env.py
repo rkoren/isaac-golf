@@ -8,7 +8,9 @@ from collections.abc import Sequence
 import numpy as np
 import torch
 
+import isaaclab.sim as sim_utils
 from flight import ball as flight_ball
+from flight import ground as flight_ground
 from flight import spin as flight_spin
 from isaaclab.envs import DirectRLEnv
 from isaaclab.markers import VisualizationMarkers
@@ -18,7 +20,8 @@ from isaaclab.utils.string import resolve_matching_names_values
 
 from .clubs import CLUBS
 from .golf_env_cfg import (
-    FLIGHT_KEYS, MPH, STRIKE_CLASSES, TRACER_CFG, TRACER_WIDTH, YD, GolfEnvCfg, apply_body, apply_club,
+    FAIRWAY_GRASS, FAIRWAY_HALF, FLIGHT_DISTANCE, FLIGHT_GROUND, FLIGHT_KEYS, FLIGHT_LAUNCH, GRASS, MPH, POST_YD, ROUGH, STRIKE_CLASSES, TRACER_CFG,
+    TRACER_WIDTH, YD, GolfEnvCfg, apply_body, apply_club,
 )
 from .golfer import CLUB_BODY, LEAD_HAND, TRAIL_HAND
 from .shapes import body_shapes
@@ -134,6 +137,7 @@ class GolfEnv(DirectRLEnv):
             [torch.stack([fwd[1], -fwd[0], fwd[2]]), fwd, torch.tensor([0.0, 0.0, 1.0], device=self.device)]
         )
         self.flight_out = torch.zeros(self.num_envs, len(FLIGHT_KEYS), device=self.device)
+        self.launch_state = torch.zeros(self.num_envs, 7, device=self.device)  # flight frame: velocity, spin, ball height
         assert self.cfg.flight or not (self.cfg.carry_weight or self.cfg.launch_weight or self.cfg.attack_weight), "flight pay needs env.flight"
         self.flight_path, self.trace_step = None, 0  # env 0's last flight (world points, seconds apart, flight time)
 
@@ -149,6 +153,27 @@ class GolfEnv(DirectRLEnv):
         assert width == self.cfg.observation_space, (
             f"observation_space={self.cfg.observation_space} but obs is {width} wide"
         )
+
+    def _setup_scene(self) -> None:
+        if self.cfg.fairway and (self.sim.has_gui or self.sim.has_offscreen_render):
+            self._spawn_fairway()
+
+    def _spawn_fairway(self) -> None:
+        # visual only, /World not cloned: the fairway goes on under the ball, the rough is raised, so nothing z-fights
+        def slab(name, size, pos, color):
+            cfg = sim_utils.CuboidCfg(size=size, visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=color, roughness=1.0))
+            cfg.func(f"/World/Fairway/{name}", cfg, translation=pos)
+
+        y0, y1, yb = -30.0, 340.0, 3.0
+        slab("base", (2 * FAIRWAY_HALF, y1 - yb, 0.02), (0.0, (yb + y1) / 2, 0.0), FAIRWAY_GRASS)  # past the feet; the plane shows only +-50 m
+        for side in (-1.0, 1.0):
+            slab(f"rough_{'l' if side < 0 else 'r'}", (185.0, y1 - y0, 0.02),
+                 (side * (FAIRWAY_HALF + 92.5), (y0 + y1) / 2, 0.0), ROUGH)
+        for yd in POST_YD:
+            col = (0.9, 0.1, 0.1) if yd % 100 == 0 else (0.95, 0.95, 0.95)
+            for side in (-1.0, 1.0):
+                slab(f"post_{yd}_{'l' if side < 0 else 'r'}", (0.25, 0.25, 2.0),
+                     (side * (FAIRWAY_HALF + 1.0), yd / YD, 1.0), col)
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         self.actions = actions.clone()
@@ -184,6 +209,25 @@ class GolfEnv(DirectRLEnv):
         self.robot.instantaneous_wrench_composer.set_forces_and_torques_index(
             forces=torch.stack((f, -f), dim=1), positions=torch.stack((hand, spot), dim=1), body_ids=[h, c], is_global=True
         )
+
+    def _calibrate_address(self, env_ids, joint_pos: torch.Tensor, joint_vel: torch.Tensor) -> None:
+        # grip spot, loft normal and head corners from the un-jittered address (a median over jittered resets shifts with N)
+        self.robot.write_joint_state_to_sim_index(position=joint_pos, velocity=joint_vel, env_ids=env_ids)
+        self._compute_intermediate_values()
+        up = quat_apply_inverse(self.club_quat[env_ids], torch.tensor([[0.0, 0.0, 1.0]], device=self.device)
+                                .expand(len(env_ids), 3)).mean(0)
+        up[0] = 0.0
+        # bottom corners: up at address is the sole's normal (the face normal is level at address)
+        u_n = up / up.norm()
+        x_n = torch.tensor([1.0, 0.0, 0.0], device=self.device)
+        t_n = torch.linalg.cross(u_n, x_n)
+        hx, hy, hz = self.head_half.tolist()
+        self.head_corners = torch.stack([a * hx * x_n + b * hy * t_n - hz * u_n for a in (1.0, -1.0) for b in (1.0, -1.0)])
+        loft = math.radians(CLUBS[self.cfg.club].loft_deg)
+        self.loft_normal = math.sin(loft) * up / up.norm()
+        self.loft_normal[0] = math.cos(loft)
+        rel = quat_apply_inverse(self.club_quat[env_ids], self.trail_pos[env_ids] - self.club_pos[env_ids])
+        self.grip_off = rel.mean(0)
 
     def _compute_intermediate_values(self):
         self.torso_pos = self.robot.data.root_pos_w.torch
@@ -262,6 +306,9 @@ class GolfEnv(DirectRLEnv):
         n = self.num_envs
         ends = self.club_pos.repeat_interleave(2, 0) + quat_apply(self.club_quat.repeat_interleave(2, 0), self.shaft_ends.repeat(n, 1))
         low = ends[:, 2].view(n, 2).amin(-1) - self.shaft_r - self.scene.env_origins[:, 2]
+        if not self.ground:  # a teed club's head can be planted; the iron's passes through the turf
+            head = self._sole_z(self.club_pos.unsqueeze(1), self.club_quat.unsqueeze(1))[:, 0].amin(-1)
+            low = torch.minimum(low, head - self.scene.env_origins[:, 2])
         late = self.post_impact > round(self.cfg.cane_grace / self.step_dt)
         self.caned |= self.impacted & late & (low < self.cfg.cane_clear)
 
@@ -399,17 +446,22 @@ class GolfEnv(DirectRLEnv):
         # start line as the env reports it (offline); height and spin from the lofted face
         azimuth = torch.rad2deg(torch.atan2(start[:, 0], start[:, 1])).cpu().numpy()
         vel = flight_ball.launch_vector(ball_speed, launch["launch_deg"], azimuth)
-        track = self.tracer is not None and bool((ids == 0).any())
-        z0 = self.tee_pose[ids, 2] - self.scene.env_origins[ids, 2]  # ball height above the ground
-        out = flight_ball.fly(vel, launch["spin"], z0=z0.cpu().numpy(), path=track)
-        cols = [out["carry"], out["side"], out["curve"], out["apex"]] + [launch[k] for k in FLIGHT_KEYS[4:]]
+        z0 = (self.tee_pose[ids, 2] - self.scene.env_origins[ids, 2]).cpu().numpy()  # ball height above the ground
+        out = flight_ball.fly(vel, launch["spin"], z0=z0)
+        # bounce and roll on the fairway; a ball that never lands or lands rising doesn't run
+        ran = flight_ground.run(out["land_vel"], out["land_spin"])
+        rest = out["land_pos"][:, :2] + ran["rest"]
+        extra = {"land_deg": out["land_deg"], "total": np.linalg.norm(rest, axis=-1), "total_side": rest[:, 0], "run": ran["run"]}
+        cols = [out[k] for k in FLIGHT_DISTANCE] + [launch[k] for k in FLIGHT_LAUNCH] + [extra[k] for k in FLIGHT_GROUND]
         self.flight_out[ids] = torch.tensor(np.stack(cols, -1), dtype=torch.float32, device=self.device)
-        if track:
+        self.launch_state[ids] = torch.tensor(np.column_stack([vel, launch["spin"], z0]), dtype=torch.float32, device=self.device)
+        if self.tracer is not None and bool((ids == 0).any()):
             i = int((ids == 0).nonzero()[0, 0])
-            pts = torch.tensor(out["path"][i], dtype=torch.float32, device=self.device) @ frame
+            path, dt, times = flight_ground.trajectory(vel[i:i + 1], launch["spin"][i:i + 1], float(z0[i]))
+            pts = torch.tensor(path, dtype=torch.float32, device=self.device) @ frame
             base = self.tee_pose[0, :3].clone()
-            base[2] -= z0[i]
-            self.flight_path = (base + pts, out["dt"], float(out["time"][i]))
+            base[2] -= float(z0[i])
+            self.flight_path = (base + pts, dt, times["rest"])
 
     def _off_target_deg(self, v: torch.Tensor) -> torch.Tensor:
         flat, tgt = v[:, :2], self.target_dir[:, :2]
@@ -438,8 +490,8 @@ class GolfEnv(DirectRLEnv):
         quat = normalize(torch.stack([-d[:, 1], d[:, 0], torch.zeros_like(length), 1.0 + d[:, 2]], dim=-1))
         mid = 0.5 * (pts[1:] + pts[:-1])
         r = TRACER_WIDTH * torch.linalg.norm(mid - self.tracer_eye, dim=-1) * (length > 1e-6)
+        self.tracer.set_visibility(True)  # visualize() is a no-op while hidden
         self.tracer.visualize(translations=mid, orientations=quat, scales=torch.stack([r, r, length], dim=-1))
-        self.tracer.set_visibility(True)
 
     def _get_observations(self) -> dict[str, torch.Tensor]:
         ref = self.tee_pose[:, :3] if self.cfg.ball_ref_obs else self.ball_pos
@@ -718,11 +770,12 @@ class GolfEnv(DirectRLEnv):
             flown = struck & ~self.backwards[env_ids]
             if self.cfg.flight and flown.any():
                 f = dict(zip(FLIGHT_KEYS, self.flight_out[env_ids][flown].T))
-                for k in ("carry", "side", "curve", "apex"):
+                for k in ("carry", "side", "curve", "apex", "total", "run"):
                     log[f"Flight/{k}_yd"] = YD * f[k].mean()
+                log["Flight/land_deg"] = f["land_deg"].mean()
                 log["Flight/side_abs_yd"] = YD * f["side"].abs().mean()
                 log["Flight/curve_abs_yd"] = YD * f["curve"].abs().mean()
-                for k in FLIGHT_KEYS[4:]:
+                for k in FLIGHT_LAUNCH:
                     log[f"Flight/{k}"] = f[k].mean()
 
         if self.ground:
@@ -755,6 +808,7 @@ class GolfEnv(DirectRLEnv):
         index_fill_(self.face_deg, env_ids, 0.0)
         index_fill_(self.path_deg, env_ids, 0.0)
         index_fill_(self.flight_out, env_ids, 0.0)
+        index_fill_(self.launch_state, env_ids, 0.0)
         index_fill_(self.top_time, env_ids, 0.0)
         index_fill_(self.trail_lift, env_ids, 0.0)
         index_fill_(self.fallen, env_ids, False)
@@ -770,6 +824,8 @@ class GolfEnv(DirectRLEnv):
 
         joint_pos = self.robot.data.default_joint_pos.torch[env_ids].clone()
         joint_vel = self.robot.data.default_joint_vel.torch[env_ids].clone()
+        if self.grip_off is None:
+            self._calibrate_address(env_ids, joint_pos, joint_vel)  # before the jitter: independent of N and seed
         joint_pos += sample_uniform(*self.cfg.initial_joint_pos_range, joint_pos.shape, joint_pos.device)
         joint_vel += sample_uniform(*self.cfg.initial_joint_vel_range, joint_vel.shape, joint_vel.device)
         limits = self.robot.data.soft_joint_pos_limits.torch[env_ids]
@@ -783,24 +839,6 @@ class GolfEnv(DirectRLEnv):
         self._compute_intermediate_values()
         self.feet_home[env_ids] = self.feet_xy[env_ids]
         self.feet_home_z[env_ids] = self.feet_z[env_ids]
-        if self.loft_normal is None:
-            up = quat_apply_inverse(self.club_quat[env_ids], torch.tensor([[0.0, 0.0, 1.0]], device=self.device)
-                                    .expand(len(env_ids), 3)).mean(0)
-            up[0] = 0.0
-            if self.ground:
-                # bottom corners: up at address is the sole's normal (the face normal is level at address)
-                u_n = up / up.norm()
-                x_n = torch.tensor([1.0, 0.0, 0.0], device=self.device)
-                t_n = torch.linalg.cross(u_n, x_n)
-                hx, hy, hz = self.head_half.tolist()
-                self.head_corners = torch.stack([a * hx * x_n + b * hy * t_n - hz * u_n for a in (1.0, -1.0) for b in (1.0, -1.0)])
-            loft = math.radians(CLUBS[self.cfg.club].loft_deg)
-            self.loft_normal = math.sin(loft) * up / up.norm()
-            self.loft_normal[0] = math.cos(loft)
-        if self.grip_off is None:
-            # median over the jittered resets: one spot on the grip
-            rel = quat_apply_inverse(self.club_quat[env_ids], self.trail_pos[env_ids] - self.club_pos[env_ids])
-            self.grip_off = rel.median(0).values
         if self.cfg.motor_noise > 0:
             self.motor_n[env_ids] = torch.randn_like(self.motor_n[env_ids])
         self.prev_club_pos[env_ids] = self.club_pos[env_ids]
